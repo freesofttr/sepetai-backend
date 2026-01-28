@@ -122,64 +122,65 @@ app.get('/api/search/all', async (req, res) => {
 function parseProducts(html) {
     const products = [];
 
-    // Try multiple price patterns
-    const pricePatterns = [
-        /"sellingPrice"\s*:\s*(\d+(?:\.\d+)?)/g,
-        /"discountedPrice"\s*:\s*(\d+(?:\.\d+)?)/g,
-        /"salePrice"\s*:\s*(\d+(?:\.\d+)?)/g,
-        /"price"\s*:\s*(\d+(?:\.\d+)?)/g,
-        /"value"\s*:\s*(\d+(?:\.\d+)?)/g,
-    ];
+    // Trendyol HTML structure (2024-2025):
+    // - Product cards have class "product-card"
+    // - Brand: <span class="product-brand">Samsung
+    // - Name: <span class="product-name">Galaxy A36...
+    // - Price: >149,90 TL (comma as decimal)
+    // - Image: data-src or src in img tags within product cards
+    // - URL: href in <a> tags within product cards
 
-    let allPrices = [];
-    for (const pattern of pricePatterns) {
-        const matches = [...html.matchAll(pattern)];
-        if (matches.length > 0) {
-            console.log(`Found ${matches.length} prices with pattern ${pattern.source}`);
-            // Filter reasonable prices (10 TL - 500000 TL)
-            const validPrices = matches.map(m => parseFloat(m[1])).filter(p => p >= 10 && p <= 500000);
-            if (validPrices.length > allPrices.length) {
-                allPrices = validPrices;
-            }
-        }
+    // Extract product information using HTML patterns
+    // Pattern for brand-name combinations
+    const brandNamePattern = /<span[^>]*class="product-brand"[^>]*>([^<]+)(?:<[^>]*>)*<\/span>\s*<span[^>]*class="product-name"[^>]*>\s*(?:<!--[^>]*-->)?\s*([^<]+)/gi;
+
+    // Simpler patterns for individual elements
+    const brandPattern = /<span[^>]*class="product-brand"[^>]*>([^<]+)/gi;
+    const namePattern = /<span[^>]*class="product-name"[^>]*>\s*(?:<!--[^>]*-->)?\s*([^<]+)/gi;
+
+    // Price pattern: matches >149,90 TL or >1.499,90 TL format
+    const pricePattern = />(\d{1,3}(?:\.\d{3})*(?:,\d{2})?)\s*TL/g;
+
+    // Image pattern for product images
+    const imagePattern = /(?:data-src|src)="(https:\/\/cdn\.dsmcdn\.com[^"]*(?:zoom|product)[^"]*)"/gi;
+
+    // URL pattern for product links
+    const urlPattern = /href="(\/[^"]*-p-\d+[^"]*)"/gi;
+
+    // Extract all matches
+    const brands = [...html.matchAll(brandPattern)].map(m => m[1].trim());
+    const names = [...html.matchAll(namePattern)].map(m => m[1].trim());
+    const prices = [...html.matchAll(pricePattern)].map(m => {
+        // Convert Turkish number format (1.234,56) to standard (1234.56)
+        let priceStr = m[1].replace(/\./g, '').replace(',', '.');
+        return parseFloat(priceStr);
+    }).filter(p => p >= 10 && p <= 500000);
+    const images = [...html.matchAll(imagePattern)].map(m => m[1].replace(/\\u002F/g, '/'));
+    const urls = [...html.matchAll(urlPattern)].map(m => 'https://www.trendyol.com' + m[1]);
+
+    console.log(`Parsed: ${brands.length} brands, ${names.length} names, ${prices.length} prices, ${images.length} images, ${urls.length} urls`);
+
+    // Combine brand and name for full product name
+    const fullNames = [];
+    for (let i = 0; i < Math.min(brands.length, names.length); i++) {
+        fullNames.push(`${brands[i]} ${names[i]}`);
     }
 
-    // Try multiple name patterns
-    const namePatterns = [
-        /"name"\s*:\s*"([^"]{10,200})"/g,
-        /"title"\s*:\s*"([^"]{10,200})"/g,
-        /"productName"\s*:\s*"([^"]{10,200})"/g,
-    ];
+    // If combined names are less than prices, try using names only
+    const productNames = fullNames.length > 0 ? fullNames : names;
 
-    let allNames = [];
-    for (const pattern of namePatterns) {
-        const matches = [...html.matchAll(pattern)];
-        if (matches.length > 0) {
-            console.log(`Found ${matches.length} names with pattern ${pattern.source}`);
-            // Filter for product-like names (not URLs, not short strings)
-            const validNames = matches.map(m => m[1]).filter(n =>
-                !n.includes('http') &&
-                !n.includes('\\u') &&
-                n.length > 10 &&
-                /[a-zA-ZğüşıöçĞÜŞİÖÇ]/.test(n)
-            );
-            if (validNames.length > allNames.length) {
-                allNames = validNames;
-            }
-        }
-    }
+    console.log(`Final: ${productNames.length} product names, ${prices.length} prices`);
 
-    console.log(`Final: ${allNames.length} names, ${allPrices.length} prices`);
-
-    // Match names with prices
-    for (let i = 0; i < Math.min(allNames.length, allPrices.length, 20); i++) {
+    // Build product list
+    const count = Math.min(productNames.length, prices.length, 30);
+    for (let i = 0; i < count; i++) {
         products.push({
-            name: allNames[i],
-            price: allPrices[i],
+            name: productNames[i] || `Ürün ${i + 1}`,
+            price: prices[i],
             originalPrice: null,
-            imageUrl: null,
-            productUrl: null,
-            brand: null,
+            imageUrl: images[i] || null,
+            productUrl: urls[i] || null,
+            brand: brands[i] || null,
             seller: null,
             store: 'Trendyol'
         });
