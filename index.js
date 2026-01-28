@@ -73,11 +73,16 @@ app.get('/api/debug/html', async (req, res) => {
         const sellerCardIdx = html.indexOf('seller-store-product-card-price');
         const sellerCardSample = sellerCardIdx > -1 ? html.substring(Math.max(0, sellerCardIdx - 1500), sellerCardIdx + 500) : null;
 
+        // Find sample of regular product card (info-wrapper)
+        const infoWrapperIdx = html.indexOf('class="info-wrapper"');
+        const infoWrapperSample = infoWrapperIdx > -1 ? html.substring(infoWrapperIdx, infoWrapperIdx + 2000) : null;
+
         res.json({
             hasJsonData: !!jsonDataMatch,
             hasSearchState: !!searchStateMatch,
             productScriptCount: productScripts.length,
             sellerCardSample,
+            infoWrapperSample,
             htmlLength: html.length,
             patterns,
             scriptCount: scripts.length,
