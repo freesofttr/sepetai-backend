@@ -446,6 +446,91 @@ function extractQueryKeywords(query) {
         .map(w => normalizeTurkish(w));
 }
 
+// Detect specific model number/version in query
+// Returns { brand, model } if found, null otherwise
+function detectModelQuery(query) {
+    const queryLower = query.toLowerCase().trim();
+
+    // iPhone model patterns: iphone 14, iphone 15, iphone 15 pro, iphone 15 pro max, iphone 16e
+    const iphoneMatch = queryLower.match(/iphone\s*(\d{1,2}(?:\s*(?:pro\s*max|pro|plus|mini|e))?)/i);
+    if (iphoneMatch) {
+        return { brand: 'iphone', model: iphoneMatch[1].replace(/\s+/g, ' ').trim() };
+    }
+
+    // Samsung Galaxy patterns: galaxy s24, galaxy s24 ultra, galaxy a55
+    const galaxyMatch = queryLower.match(/(?:samsung\s*)?galaxy\s*([a-z]?\d{1,2}(?:\s*(?:ultra|plus|fe))?)/i);
+    if (galaxyMatch) {
+        return { brand: 'galaxy', model: galaxyMatch[1].replace(/\s+/g, ' ').trim() };
+    }
+
+    // iPad patterns: ipad pro, ipad air, ipad mini
+    const ipadMatch = queryLower.match(/ipad\s*(pro|air|mini)?(?:\s*(\d+))?(?:\s*m(\d))?/i);
+    if (ipadMatch && (ipadMatch[1] || ipadMatch[2] || ipadMatch[3])) {
+        const parts = [ipadMatch[1], ipadMatch[2], ipadMatch[3] ? `m${ipadMatch[3]}` : null].filter(Boolean);
+        return { brand: 'ipad', model: parts.join(' ').trim() };
+    }
+
+    // MacBook patterns
+    const macMatch = queryLower.match(/macbook\s*(pro|air)?(?:\s*m(\d))?/i);
+    if (macMatch && (macMatch[1] || macMatch[2])) {
+        const parts = [macMatch[1], macMatch[2] ? `m${macMatch[2]}` : null].filter(Boolean);
+        return { brand: 'macbook', model: parts.join(' ').trim() };
+    }
+
+    // Xiaomi patterns: xiaomi 14, redmi note 13
+    const xiaomiMatch = queryLower.match(/(?:xiaomi|redmi|poco)\s*([\w]+(?:\s*(?:note|pro|ultra|lite|plus))?\s*\d*)/i);
+    if (xiaomiMatch) {
+        return { brand: queryLower.match(/(xiaomi|redmi|poco)/i)[1], model: xiaomiMatch[1].trim() };
+    }
+
+    return null;
+}
+
+// Check if product name matches the specific model from query
+function matchesSpecificModel(productName, modelQuery) {
+    const nameNorm = normalizeTurkish(productName.toLowerCase());
+
+    if (modelQuery.brand === 'iphone') {
+        // Extract model number from product name
+        const nameModelMatch = nameNorm.match(/iphone\s*(\d{1,2})/);
+        if (!nameModelMatch) return false;
+
+        const queryModelNum = modelQuery.model.match(/(\d{1,2})/);
+        if (!queryModelNum) return true;
+
+        // Model number must match exactly
+        if (nameModelMatch[1] !== queryModelNum[1]) return false;
+
+        // Check sub-model (pro max, pro, plus, mini, e)
+        const querySubModel = modelQuery.model.replace(/\d+\s*/, '').trim();
+        if (querySubModel) {
+            // Query specifies sub-model - product must contain it
+            return nameNorm.includes(querySubModel);
+        }
+        return true; // No sub-model filter, any variant of this number is fine
+    }
+
+    if (modelQuery.brand === 'galaxy') {
+        const nameModelMatch = nameNorm.match(/galaxy\s*([a-z]?\d{1,2})/);
+        if (!nameModelMatch) return false;
+
+        const queryModelPart = modelQuery.model.match(/([a-z]?\d{1,2})/);
+        if (!queryModelPart) return true;
+
+        if (nameModelMatch[1] !== queryModelPart[1]) return false;
+
+        const querySubModel = modelQuery.model.replace(/[a-z]?\d+\s*/, '').trim();
+        if (querySubModel) {
+            return nameNorm.includes(querySubModel);
+        }
+        return true;
+    }
+
+    // Generic brand+model: just check that all model words appear in product name
+    const modelWords = modelQuery.model.split(/\s+/);
+    return modelWords.every(word => nameNorm.includes(word));
+}
+
 // Calculate how well a product name matches the search query
 function calculateQueryRelevance(productName, queryKeywords) {
     if (queryKeywords.length === 0) return 1.0;
@@ -464,6 +549,7 @@ function calculateQueryRelevance(productName, queryKeywords) {
 
 function analyzeSearchIntent(query) {
     const queryLower = query.toLowerCase().trim();
+    const modelQuery = detectModelQuery(query);
 
     for (const [category, config] of Object.entries(PRODUCT_CATEGORIES)) {
         const matched = config.keywords.some(keyword => queryLower.includes(keyword));
@@ -474,7 +560,8 @@ function analyzeSearchIntent(query) {
                 excludeKeywords: config.excludeKeywords,
                 mainProductIndicators: config.mainProductIndicators,
                 originalQuery: query,
-                queryKeywords: extractQueryKeywords(query)
+                queryKeywords: extractQueryKeywords(query),
+                modelQuery // specific model filter (e.g., {brand:'iphone', model:'15 pro'})
             };
         }
     }
@@ -485,7 +572,8 @@ function analyzeSearchIntent(query) {
         excludeKeywords: [],
         mainProductIndicators: [],
         originalQuery: query,
-        queryKeywords: extractQueryKeywords(query)
+        queryKeywords: extractQueryKeywords(query),
+        modelQuery
     };
 }
 
@@ -498,6 +586,13 @@ function classifyProduct(product, intent) {
     // If no query keywords match at all, it's likely irrelevant
     if (intent.queryKeywords.length > 0 && queryRelevance === 0) {
         return { type: 'Alakasız', confidence: 0.8, isRelevant: false };
+    }
+
+    // Model-specific filtering: if user searched "iphone 15", exclude "iphone 16", "iphone 14" etc.
+    if (intent.modelQuery) {
+        if (!matchesSpecificModel(product.name, intent.modelQuery)) {
+            return { type: 'Farklı Model', confidence: 0.9, isRelevant: false };
+        }
     }
 
     // Check if product name contains accessory patterns
@@ -567,7 +662,7 @@ function analyzeDiscount(product) {
 
 function smartFilterProducts(query, products) {
     const intent = analyzeSearchIntent(query);
-    console.log(`Search intent: ${intent.intentLabel} (${intent.category}), keywords: [${intent.queryKeywords.join(', ')}]`);
+    console.log(`Search intent: ${intent.intentLabel} (${intent.category}), keywords: [${intent.queryKeywords.join(', ')}], model: ${intent.modelQuery ? `${intent.modelQuery.brand} ${intent.modelQuery.model}` : 'none'}`);
 
     const analyzed = products.map(product => {
         const classification = classifyProduct(product, intent);
@@ -586,15 +681,12 @@ function smartFilterProducts(query, products) {
         };
     });
 
-    // Filter: relevant products first, sorted by query relevance then confidence
+    // Filter: relevant products, sorted by price (cheapest first)
     const relevant = analyzed
         .filter(p => p.isRelevant)
         .sort((a, b) => {
-            // Primary sort: query relevance (how well name matches search)
-            const relDiff = b._queryRelevance - a._queryRelevance;
-            if (Math.abs(relDiff) > 0.1) return relDiff;
-            // Secondary sort: classification confidence
-            return b.relevanceScore - a.relevanceScore;
+            // Primary sort: price ascending (cheapest first)
+            return a.price - b.price;
         })
         .map(p => {
             // Remove internal field from response
