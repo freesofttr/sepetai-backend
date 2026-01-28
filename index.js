@@ -234,7 +234,7 @@ function parseProducts(html) {
 
             // Extract product name - handle <!-- --> comment
             // Pattern: class="product-name"...> <!-- -->Actual Name
-            const nameMatch = block.match(/class="product-name"[^>]*>(?:\s*<!--[^>]*-->)?\s*([^<]+)/i);
+            const nameMatch = block.match(/class="product-name"[^>]*>(?:\s*<!--[\s\S]*?-->)?\s*([^<]+)/i);
             const name = nameMatch ? nameMatch[1].trim() : null;
 
             // Extract price from price-section or sale-price
