@@ -113,7 +113,8 @@ app.get('/api/search/all', async (req, res) => {
         const fetch = (await import('node-fetch')).default;
 
         const targetUrl = `https://www.trendyol.com/sr?q=${encodeURIComponent(q)}`;
-        const apiUrl = `https://api.scraperapi.com/?api_key=${API_KEY}&url=${encodeURIComponent(targetUrl)}&render=true&country_code=tr`;
+        // Try without render first (faster), only use render if needed
+        const apiUrl = `https://api.scraperapi.com/?api_key=${API_KEY}&url=${encodeURIComponent(targetUrl)}&country_code=tr`;
 
         const response = await fetch(apiUrl);
         if (!response.ok) {
