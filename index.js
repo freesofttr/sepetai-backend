@@ -8,6 +8,24 @@ const API_KEY = '27c0df8063c38ebc97100e825ff4cd1c';
 app.use(cors());
 app.use(express.json());
 
+// Simple in-memory cache (5 minute TTL)
+const cache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function getCached(key) {
+    const item = cache.get(key);
+    if (!item) return null;
+    if (Date.now() - item.timestamp > CACHE_TTL) {
+        cache.delete(key);
+        return null;
+    }
+    return item.data;
+}
+
+function setCache(key, data) {
+    cache.set(key, { data, timestamp: Date.now() });
+}
+
 app.get('/', (req, res) => {
     res.json({ status: 'ok', message: 'SepetAI Backend' });
 });
@@ -107,6 +125,14 @@ app.get('/api/search/all', async (req, res) => {
     const { q } = req.query;
     if (!q) return res.status(400).json({ error: 'Query required' });
 
+    // Check cache first
+    const cacheKey = `search:${q.toLowerCase()}`;
+    const cached = getCached(cacheKey);
+    if (cached) {
+        console.log(`Cache hit for: ${q}`);
+        return res.json(cached);
+    }
+
     console.log(`Searching: ${q}`);
 
     try {
@@ -141,7 +167,9 @@ app.get('/api/search/all', async (req, res) => {
         const products = parseProducts(html);
         console.log(`Found ${products.length} products`);
 
-        res.json({ query: q, count: products.length, products });
+        const result = { query: q, count: products.length, products };
+        setCache(cacheKey, result);
+        res.json(result);
     } catch (error) {
         console.error('Error:', error.message);
         res.status(500).json({ error: error.message });
