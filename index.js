@@ -16,41 +16,101 @@ app.get('/', (req, res) => {
     res.json({ status: 'ok', message: 'SepetAI Backend API with ScraperAPI' });
 });
 
-// Helper function to fetch via ScraperAPI
-async function fetchWithScraperAPI(url, options = {}) {
+// Helper function to fetch via ScraperAPI (without rendering - faster)
+async function fetchWithScraperAPI(url, useRender = false) {
     const fetch = (await import('node-fetch')).default;
 
     const params = new URLSearchParams({
         api_key: SCRAPER_API_KEY,
         url: url,
-        render: 'true',  // Enable JavaScript rendering
-        country_code: 'tr'  // Use Turkish IP
+        country_code: 'tr'
     });
 
-    const scraperUrl = `${SCRAPER_API_URL}?${params.toString()}`;
-    console.log(`Fetching via ScraperAPI: ${url}`);
-
-    const response = await fetch(scraperUrl, {
-        timeout: 60000,  // 60 second timeout for rendered pages
-        ...options
-    });
-
-    if (!response.ok) {
-        throw new Error(`ScraperAPI returned ${response.status}`);
+    // Only add render if needed (much slower)
+    if (useRender) {
+        params.set('render', 'true');
     }
 
-    return response;
+    const scraperUrl = `${SCRAPER_API_URL}?${params.toString()}`;
+    console.log(`Fetching via ScraperAPI (render=${useRender}): ${url}`);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), useRender ? 45000 : 20000);
+
+    try {
+        const response = await fetch(scraperUrl, {
+            signal: controller.signal
+        });
+        clearTimeout(timeout);
+
+        if (!response.ok) {
+            throw new Error(`ScraperAPI returned ${response.status}`);
+        }
+
+        return response;
+    } catch (error) {
+        clearTimeout(timeout);
+        throw error;
+    }
 }
 
-// Search products
+// Search all stores - optimized for speed
+app.get('/api/search/all', async (req, res) => {
+    const { q } = req.query;
+
+    if (!q) {
+        return res.status(400).json({ error: 'Query parameter "q" is required' });
+    }
+
+    console.log(`Searching for "${q}"...`);
+    const startTime = Date.now();
+
+    try {
+        // Try Trendyol first (usually fastest and most reliable)
+        let products = await scrapeTrendyol(q);
+
+        // If Trendyol got results, return immediately
+        if (products.length > 0) {
+            console.log(`Trendyol returned ${products.length} products in ${Date.now() - startTime}ms`);
+            return res.json({
+                query: q,
+                count: products.length,
+                products
+            });
+        }
+
+        // Try other stores in parallel if Trendyol failed
+        console.log('Trendyol returned 0, trying other stores...');
+        const [hepsiburada, n11] = await Promise.allSettled([
+            scrapeHepsiburada(q),
+            scrapeN11(q)
+        ]);
+
+        products = [
+            ...(hepsiburada.status === 'fulfilled' ? hepsiburada.value : []),
+            ...(n11.status === 'fulfilled' ? n11.value : [])
+        ];
+
+        console.log(`Found ${products.length} total products in ${Date.now() - startTime}ms`);
+
+        res.json({
+            query: q,
+            count: products.length,
+            products
+        });
+    } catch (error) {
+        console.error('Scraping error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Search single store
 app.get('/api/search', async (req, res) => {
     const { q, store = 'trendyol' } = req.query;
 
     if (!q) {
         return res.status(400).json({ error: 'Query parameter "q" is required' });
     }
-
-    console.log(`Searching for "${q}" on ${store}...`);
 
     try {
         let products = [];
@@ -69,7 +129,6 @@ app.get('/api/search', async (req, res) => {
                 products = await scrapeTrendyol(q);
         }
 
-        console.log(`Found ${products.length} products`);
         res.json({
             query: q,
             store,
@@ -82,71 +141,98 @@ app.get('/api/search', async (req, res) => {
     }
 });
 
-// Search all stores
-app.get('/api/search/all', async (req, res) => {
-    const { q } = req.query;
-
-    if (!q) {
-        return res.status(400).json({ error: 'Query parameter "q" is required' });
-    }
-
-    console.log(`Searching for "${q}" on all stores with ScraperAPI...`);
-
-    try {
-        // Try all stores in parallel with ScraperAPI
-        const [trendyol, hepsiburada, n11] = await Promise.allSettled([
-            scrapeTrendyol(q),
-            scrapeHepsiburada(q),
-            scrapeN11(q)
-        ]);
-
-        console.log('Trendyol:', trendyol.status, trendyol.status === 'rejected' ? trendyol.reason?.message : `${trendyol.value?.length} products`);
-        console.log('Hepsiburada:', hepsiburada.status, hepsiburada.status === 'rejected' ? hepsiburada.reason?.message : `${hepsiburada.value?.length} products`);
-        console.log('N11:', n11.status, n11.status === 'rejected' ? n11.reason?.message : `${n11.value?.length} products`);
-
-        let products = [
-            ...(trendyol.status === 'fulfilled' ? trendyol.value : []),
-            ...(hepsiburada.status === 'fulfilled' ? hepsiburada.value : []),
-            ...(n11.status === 'fulfilled' ? n11.value : [])
-        ];
-
-        console.log(`Found ${products.length} total products`);
-
-        res.json({
-            query: q,
-            count: products.length,
-            products
-        });
-    } catch (error) {
-        console.error('Scraping error:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Trendyol scraper with ScraperAPI
+// Trendyol scraper - tries fast method first, then with render
 async function scrapeTrendyol(query) {
-    console.log('Starting Trendyol scraper with ScraperAPI...');
+    console.log('Starting Trendyol scraper...');
 
+    // Try mobile API first (fastest, no scraping needed)
+    try {
+        const apiProducts = await fetchTrendyolMobileAPI(query);
+        if (apiProducts.length > 0) {
+            console.log(`Trendyol API returned ${apiProducts.length} products`);
+            return apiProducts;
+        }
+    } catch (e) {
+        console.log('Trendyol API failed:', e.message);
+    }
+
+    // Try scraping without render first (faster)
     try {
         const url = `https://www.trendyol.com/sr?q=${encodeURIComponent(query)}`;
-        const response = await fetchWithScraperAPI(url);
+        const response = await fetchWithScraperAPI(url, false);
         const html = await response.text();
 
-        console.log(`Trendyol HTML length: ${html.length}`);
+        console.log(`Trendyol HTML length (no render): ${html.length}`);
 
-        // Check if we got blocked
-        if (html.includes('Bir dakika') || html.includes('captcha')) {
-            console.log('Trendyol returned captcha page');
-            return [];
+        if (!html.includes('Bir dakika') && !html.includes('captcha')) {
+            const products = parseTrendyolProducts(html);
+            if (products.length > 0) {
+                console.log(`Parsed ${products.length} products from Trendyol (no render)`);
+                return products;
+            }
         }
+    } catch (e) {
+        console.log('Trendyol no-render failed:', e.message);
+    }
 
-        // Parse products from HTML
-        const products = parseTrendyolProducts(html);
-        console.log(`Parsed ${products.length} products from Trendyol`);
+    // Last resort: try with render (slower but more reliable)
+    try {
+        const url = `https://www.trendyol.com/sr?q=${encodeURIComponent(query)}`;
+        const response = await fetchWithScraperAPI(url, true);
+        const html = await response.text();
 
-        return products;
-    } catch (error) {
-        console.error('Trendyol scraper error:', error.message);
+        console.log(`Trendyol HTML length (with render): ${html.length}`);
+
+        if (!html.includes('Bir dakika') && !html.includes('captcha')) {
+            const products = parseTrendyolProducts(html);
+            console.log(`Parsed ${products.length} products from Trendyol (with render)`);
+            return products;
+        }
+    } catch (e) {
+        console.log('Trendyol with-render failed:', e.message);
+    }
+
+    return [];
+}
+
+// Trendyol mobile API (fastest method)
+async function fetchTrendyolMobileAPI(query) {
+    const fetch = (await import('node-fetch')).default;
+
+    const params = new URLSearchParams({
+        api_key: SCRAPER_API_KEY,
+        url: `https://public.trendyol.com/discovery-web-searchgw-service/v2/api/infinite-scroll/sr?q=${encodeURIComponent(query)}&qt=${encodeURIComponent(query)}&st=${encodeURIComponent(query)}&os=1&pi=1&culture=tr-TR&userGenderId=1&pId=0&scoringAlgorithmId=2&categoryRelevancyEnabled=false&isLegalRequirementConfirmed=false&searchStrategyType=DEFAULT&productStampType=TypeA`,
+        country_code: 'tr'
+    });
+
+    const response = await fetch(`${SCRAPER_API_URL}?${params.toString()}`, {
+        headers: {
+            'Accept': 'application/json'
+        }
+    });
+
+    if (!response.ok) {
+        throw new Error(`API returned ${response.status}`);
+    }
+
+    const text = await response.text();
+
+    try {
+        const data = JSON.parse(text);
+        const apiProducts = data?.result?.products || [];
+
+        return apiProducts.slice(0, 20).map(p => ({
+            name: p.name || '',
+            price: p.price?.sellingPrice || p.price?.discountedPrice || 0,
+            originalPrice: p.price?.originalPrice !== p.price?.sellingPrice ? p.price?.originalPrice : null,
+            imageUrl: p.images?.[0] ? `https://cdn.dsmcdn.com/ty${p.images[0].replace('/ty', '')}` : null,
+            productUrl: p.url ? `https://www.trendyol.com${p.url}` : null,
+            brand: p.brand?.name || null,
+            seller: p.merchantName || null,
+            store: 'Trendyol'
+        }));
+    } catch (e) {
+        console.log('Failed to parse Trendyol API response');
         return [];
     }
 }
@@ -175,67 +261,51 @@ function parseTrendyolProducts(html) {
                 });
             });
 
-            return products;
+            if (products.length > 0) return products;
         } catch (e) {
             console.log('Failed to parse Trendyol JSON:', e.message);
         }
     }
 
-    // Fallback: Parse HTML directly
-    const productRegex = /<div[^>]*class="[^"]*p-card-wrppr[^"]*"[^>]*>[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/gi;
-    const matches = html.match(productRegex) || [];
+    // Fallback: Parse HTML directly with regex
+    const nameMatches = [...html.matchAll(/prdct-desc-cntnr-name[^>]*>([^<]+)</g)];
+    const priceMatches = [...html.matchAll(/prc-box-(?:dscntd|sllng)[^>]*>([^<]+)</g)];
 
-    matches.slice(0, 20).forEach(match => {
-        try {
-            const nameMatch = match.match(/prdct-desc-cntnr-name[^>]*>([^<]+)</);
-            const priceMatch = match.match(/prc-box-(?:dscntd|sllng)[^>]*>([^<]+)</);
-            const originalPriceMatch = match.match(/prc-box-orgnl[^>]*>([^<]+)</);
-            const imageMatch = match.match(/src="(https:\/\/cdn\.dsmcdn\.com[^"]+)"/);
-            const linkMatch = match.match(/href="([^"]+)"/);
-            const brandMatch = match.match(/prdct-desc-cntnr-ttl[^>]*>([^<]+)</);
+    const minLength = Math.min(nameMatches.length, priceMatches.length, 20);
 
-            if (nameMatch && priceMatch) {
-                const priceText = priceMatch[1].replace(/[^\d,]/g, '').replace(',', '.');
-                const originalPriceText = originalPriceMatch ?
-                    originalPriceMatch[1].replace(/[^\d,]/g, '').replace(',', '.') : null;
-
-                products.push({
-                    name: nameMatch[1].trim(),
-                    price: parseFloat(priceText) || 0,
-                    originalPrice: originalPriceText ? parseFloat(originalPriceText) : null,
-                    imageUrl: imageMatch ? imageMatch[1] : null,
-                    productUrl: linkMatch ? `https://www.trendyol.com${linkMatch[1]}` : null,
-                    brand: brandMatch ? brandMatch[1].trim() : null,
-                    seller: null,
-                    store: 'Trendyol'
-                });
-            }
-        } catch (e) {
-            // Skip this product
-        }
-    });
+    for (let i = 0; i < minLength; i++) {
+        const priceText = priceMatches[i][1].replace(/[^\d,]/g, '').replace(',', '.');
+        products.push({
+            name: nameMatches[i][1].trim(),
+            price: parseFloat(priceText) || 0,
+            originalPrice: null,
+            imageUrl: null,
+            productUrl: null,
+            brand: null,
+            seller: null,
+            store: 'Trendyol'
+        });
+    }
 
     return products;
 }
 
-// Hepsiburada scraper with ScraperAPI
+// Hepsiburada scraper
 async function scrapeHepsiburada(query) {
-    console.log('Starting Hepsiburada scraper with ScraperAPI...');
+    console.log('Starting Hepsiburada scraper...');
 
     try {
         const url = `https://www.hepsiburada.com/ara?q=${encodeURIComponent(query)}`;
-        const response = await fetchWithScraperAPI(url);
+        const response = await fetchWithScraperAPI(url, false);
         const html = await response.text();
 
         console.log(`Hepsiburada HTML length: ${html.length}`);
 
-        // Check if we got blocked
         if (html.includes('captcha') || html.includes('robot')) {
             console.log('Hepsiburada returned captcha page');
             return [];
         }
 
-        // Parse products from HTML
         const products = parseHepsiburadaProducts(html);
         console.log(`Parsed ${products.length} products from Hepsiburada`);
 
@@ -251,13 +321,13 @@ function parseHepsiburadaProducts(html) {
     const products = [];
 
     // Try to find JSON data
-    const jsonMatch = html.match(/__SEARCH_RESULT_INITIAL_STATE__\s*=\s*({.*?});/s) ||
-                      html.match(/window\.__remixContext\s*=\s*({.*?});/s);
+    const jsonMatch = html.match(/__SEARCH_RESULT__\s*=\s*({.*?});/s) ||
+                      html.match(/window\.__remixContext\s*=\s*({[\s\S]*?});/);
 
     if (jsonMatch) {
         try {
             const data = JSON.parse(jsonMatch[1]);
-            const items = data?.products || data?.loaderData?.['routes/_main.ara']?.products || [];
+            const items = data?.products || [];
 
             items.slice(0, 20).forEach(p => {
                 products.push({
@@ -272,27 +342,22 @@ function parseHepsiburadaProducts(html) {
                 });
             });
 
-            return products;
+            if (products.length > 0) return products;
         } catch (e) {
             console.log('Failed to parse Hepsiburada JSON:', e.message);
         }
     }
 
     // Fallback: Parse HTML with regex
-    // Look for product cards
-    const nameRegex = /data-test-id="product-card-name"[^>]*>([^<]+)</gi;
-    const priceRegex = /data-test-id="price-current-price"[^>]*>([^<]+)</gi;
+    const nameMatches = [...html.matchAll(/data-test-id="product-card-name"[^>]*>([^<]+)</g)];
+    const priceMatches = [...html.matchAll(/data-test-id="price-current-price"[^>]*>([^<]+)</g)];
 
-    const names = [...html.matchAll(nameRegex)];
-    const prices = [...html.matchAll(priceRegex)];
-
-    const minLength = Math.min(names.length, prices.length, 20);
+    const minLength = Math.min(nameMatches.length, priceMatches.length, 20);
 
     for (let i = 0; i < minLength; i++) {
-        const priceText = prices[i][1].replace(/[^\d,]/g, '').replace(',', '.');
-
+        const priceText = priceMatches[i][1].replace(/[^\d,]/g, '').replace(',', '.');
         products.push({
-            name: names[i][1].trim(),
+            name: nameMatches[i][1].trim(),
             price: parseFloat(priceText) || 0,
             originalPrice: null,
             imageUrl: null,
@@ -306,24 +371,22 @@ function parseHepsiburadaProducts(html) {
     return products;
 }
 
-// N11 scraper with ScraperAPI
+// N11 scraper
 async function scrapeN11(query) {
-    console.log('Starting N11 scraper with ScraperAPI...');
+    console.log('Starting N11 scraper...');
 
     try {
         const url = `https://www.n11.com/arama?q=${encodeURIComponent(query)}`;
-        const response = await fetchWithScraperAPI(url);
+        const response = await fetchWithScraperAPI(url, false);
         const html = await response.text();
 
         console.log(`N11 HTML length: ${html.length}`);
 
-        // Check if we got blocked
         if (html.includes('captcha') || html.includes('robot')) {
             console.log('N11 returned captcha page');
             return [];
         }
 
-        // Parse products from HTML
         const products = parseN11Products(html);
         console.log(`Parsed ${products.length} products from N11`);
 
@@ -338,8 +401,6 @@ async function scrapeN11(query) {
 function parseN11Products(html) {
     const products = [];
 
-    // N11 uses standard HTML structure
-    // Look for product items
     const productBlocks = html.split('class="columnContent"');
 
     productBlocks.slice(1, 21).forEach(block => {
