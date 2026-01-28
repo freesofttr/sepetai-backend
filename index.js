@@ -19,8 +19,10 @@ app.get('/api/search/all', async (req, res) => {
     console.log(`Searching: ${q}`);
 
     try {
+        const fetch = (await import('node-fetch')).default;
+
         const targetUrl = `https://www.trendyol.com/sr?q=${encodeURIComponent(q)}`;
-        const apiUrl = `http://api.scraperapi.com?api_key=${API_KEY}&url=${encodeURIComponent(targetUrl)}&render=true&country_code=tr`;
+        const apiUrl = `https://api.scraperapi.com/?api_key=${API_KEY}&url=${encodeURIComponent(targetUrl)}&render=true&country_code=tr`;
 
         console.log('Fetching from ScraperAPI...');
         const response = await fetch(apiUrl);
@@ -46,7 +48,6 @@ app.get('/api/search/all', async (req, res) => {
 function parseProducts(html) {
     const products = [];
 
-    // Try embedded JSON
     const match = html.match(/__SEARCH_APP_INITIAL_STATE__\s*=\s*(\{[\s\S]*?\});/);
     if (match) {
         try {
@@ -72,7 +73,6 @@ function parseProducts(html) {
         }
     }
 
-    // Fallback regex
     if (products.length === 0) {
         const names = [...html.matchAll(/prdct-desc-cntnr-name[^>]*>([^<]+)</g)];
         const prices = [...html.matchAll(/prc-box-(?:dscntd|sllng)[^>]*>([^<]+)</g)];
