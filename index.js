@@ -62,17 +62,22 @@ app.get('/api/debug/html', async (req, res) => {
         // Look for selling/discounted price patterns
         const sellingMatches = html.match(/sellingPrice[^}]*}/gi) || [];
 
-        // Find a complete product card sample
-        const cardStartIdx = html.indexOf('class="product-card"');
-        const productCardSample = cardStartIdx > -1 ? html.substring(cardStartIdx, cardStartIdx + 4000) : null;
+        // Find embedded JSON data
+        const jsonDataMatch = html.match(/window\["__[^"]*searchResult[^"]*"\]\s*=\s*(\{[\s\S]*?\});?\s*<\/script>/i);
+        const searchStateMatch = html.match(/window\["__SEARCH[^"]*"\]\s*=\s*(\{[\s\S]*?\});?\s*<\/script>/i);
 
-        // Find how product cards are structured
-        const cardCount = (html.match(/class="product-card"/g) || []).length;
-        const sellerStoreCardCount = (html.match(/seller-store-product-card/g) || []).length;
+        // Find product info in script tags
+        const productScripts = html.match(/<script[^>]*>[\s\S]*?(?:productId|"id":\d+)[\s\S]*?<\/script>/gi) || [];
+
+        // Find sample of seller-store card with full content
+        const sellerCardIdx = html.indexOf('seller-store-product-card-price');
+        const sellerCardSample = sellerCardIdx > -1 ? html.substring(Math.max(0, sellerCardIdx - 1500), sellerCardIdx + 500) : null;
 
         res.json({
-            cardCount,
-            sellerStoreCardCount,
+            hasJsonData: !!jsonDataMatch,
+            hasSearchState: !!searchStateMatch,
+            productScriptCount: productScripts.length,
+            sellerCardSample,
             htmlLength: html.length,
             patterns,
             scriptCount: scripts.length,
