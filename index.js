@@ -141,15 +141,28 @@ app.get('/api/search/all', async (req, res) => {
 function parseProducts(html) {
     const products = [];
 
-    // Split HTML by product cards to keep name/price aligned
-    // Product cards are <a> tags with class="product-card"
-    const cardSplits = html.split(/(?=<a[^>]*class="[^"]*product-card[^"]*")/i);
-    console.log(`Split into ${cardSplits.length} parts`);
+    // Find all product card positions using indexOf
+    // Product cards have class="product-card" attribute
+    const cardPositions = [];
+    let searchStart = 0;
+    while (true) {
+        const pos = html.indexOf('class="product-card"', searchStart);
+        if (pos === -1) break;
+        // Find the start of the <a tag (go back to find <a)
+        let tagStart = html.lastIndexOf('<a', pos);
+        if (tagStart !== -1 && pos - tagStart < 200) {  // Make sure <a is within reasonable distance
+            cardPositions.push(tagStart);
+        }
+        searchStart = pos + 1;
+    }
 
-    for (let i = 1; i < cardSplits.length && products.length < 30; i++) {
-        const card = cardSplits[i];
-        // Limit card to reasonable size (until next major element)
-        const cardContent = card.substring(0, 5000);
+    console.log(`Found ${cardPositions.length} product card positions`);
+
+    for (let i = 0; i < cardPositions.length && products.length < 30; i++) {
+        // Get card content from this position to the next card (or end)
+        const startPos = cardPositions[i];
+        const endPos = cardPositions[i + 1] || startPos + 5000;
+        const cardContent = html.substring(startPos, Math.min(endPos, startPos + 5000));
 
         // Extract brand
         const brandMatch = cardContent.match(/<span[^>]*class="product-brand"[^>]*>([^<]+)/i);
@@ -188,7 +201,7 @@ function parseProducts(html) {
         }
 
         // Extract product URL
-        const urlMatch = card.match(/href="([^"]*-p-[0-9]+[^"]*)"/i);
+        const urlMatch = cardContent.match(/href="([^"]*-p-[0-9]+[^"]*)"/i);
         const productUrl = urlMatch ? 'https://www.trendyol.com' + urlMatch[1] : null;
 
         // Extract image URL
