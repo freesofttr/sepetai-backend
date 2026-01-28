@@ -194,10 +194,21 @@ function parseProducts(html) {
     for (let i = 1; i < parts.length && products.length < 30; i++) {
         const cardContent = parts[i].substring(0, 2000);  // Each card content
 
-        // Also get the href from before the marker (in the <a> tag opening)
-        const precedingContent = parts[i - 1].slice(-300);
-        const hrefMatch = precedingContent.match(/href="([^"]*-p-[0-9]+[^"]*)"\s*$/);
-        const productUrl = hrefMatch ? 'https://www.trendyol.com' + hrefMatch[1] : null;
+        // Get the href - it can be right after class attribute or in preceding content
+        let productUrl = null;
+
+        // Pattern 1: href comes right after the split point (class="seller-store-product-card" href="...")
+        const hrefAfterMatch = cardContent.match(/^\s*href="([^"]*-p-[0-9]+[^"]*)"/);
+        if (hrefAfterMatch) {
+            productUrl = 'https://www.trendyol.com' + hrefAfterMatch[1];
+        } else {
+            // Pattern 2: href comes before class attribute (href="..." class="seller-store-product-card")
+            const precedingContent = parts[i - 1].slice(-500);
+            const hrefBeforeMatch = precedingContent.match(/href="([^"]*-p-[0-9]+[^"]*)"/);
+            if (hrefBeforeMatch) {
+                productUrl = 'https://www.trendyol.com' + hrefBeforeMatch[1];
+            }
+        }
 
         // Extract brand from <strong class="product-brand">
         const brandMatch = cardContent.match(/class="product-brand"[^>]*>([^<]+)/i);
@@ -223,6 +234,13 @@ function parseProducts(html) {
         if (!price || price < 100) continue;
 
         const fullName = brand && name ? `${brand} ${name}` : (name || 'Unknown Product');
+
+        // Log URL extraction status
+        if (productUrl) {
+            console.log(`Product "${fullName.substring(0, 30)}..." has URL: ${productUrl.substring(0, 60)}...`);
+        } else {
+            console.log(`Warning: No URL found for product "${fullName.substring(0, 30)}..."`);
+        }
 
         products.push({
             name: fullName,
@@ -284,9 +302,9 @@ function parseProducts(html) {
                 }
             }
 
-            // Extract product URL from surrounding context
-            const contextStart = Math.max(0, startPos - 500);
-            const context = html.substring(contextStart, startPos + 500);
+            // Extract product URL from surrounding context - search wider area
+            const contextStart = Math.max(0, startPos - 1000);
+            const context = html.substring(contextStart, startPos + 1000);
             const urlMatch = context.match(/href="([^"]*-p-[0-9]+[^"]*)"/i);
             const productUrl = urlMatch ? 'https://www.trendyol.com' + urlMatch[1] : null;
 
