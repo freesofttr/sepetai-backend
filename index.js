@@ -250,7 +250,7 @@ function parseProducts(html) {
                 const priceMatch = block.match(pattern);
                 if (priceMatch) {
                     price = parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.'));
-                    if (price >= 1000 && price <= 500000) break;
+                    if (price >= 100 && price <= 500000) break;
                     price = null;
                 }
             }
