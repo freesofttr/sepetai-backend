@@ -134,49 +134,67 @@ app.get('/api/search/all', async (req, res) => {
 function parseProducts(html) {
     const products = [];
 
-    // Trendyol HTML structure (2024-2025):
-    // - Brand: <span class="product-brand">Samsung
-    // - Name: <span class="product-name">Galaxy A36...
-    // - Price formats:
-    //   - class="product-price">16.999 TL (thousands sep: dot, no decimals)
-    //   - class="price-section">9.899,01 TL (thousands sep: dot, decimal sep: comma)
+    // Split HTML by product cards to keep name/price aligned
+    // Product cards are <a> tags with class="product-card"
+    const cardSplits = html.split(/(?=<a[^>]*class="[^"]*product-card[^"]*")/i);
+    console.log(`Split into ${cardSplits.length} parts`);
 
-    // Extract brands
-    const brandPattern = /<span[^>]*class="product-brand"[^>]*>([^<]+)/gi;
-    const brands = [...html.matchAll(brandPattern)].map(m => m[1].trim());
+    for (let i = 1; i < cardSplits.length && products.length < 30; i++) {
+        const card = cardSplits[i];
+        // Limit card to reasonable size (until next major element)
+        const cardContent = card.substring(0, 5000);
 
-    // Extract product names
-    const namePattern = /<span[^>]*class="product-name"[^>]*>\s*(?:<!--[^>]*-->)?\s*([^<]+)/gi;
-    const names = [...html.matchAll(namePattern)].map(m => m[1].trim());
+        // Extract brand
+        const brandMatch = cardContent.match(/<span[^>]*class="product-brand"[^>]*>([^<]+)/i);
+        const brand = brandMatch ? brandMatch[1].trim() : null;
 
-    // Extract prices from product-price and price-section classes
-    // Format: 16.999 TL or 9.899,01 TL
-    const pricePattern = /class="(?:product-price|price-section)"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/gi;
-    const prices = [...html.matchAll(pricePattern)].map(m => {
-        // Convert Turkish format: 16.999 -> 16999 or 9.899,01 -> 9899.01
-        let priceStr = m[1].replace(/\./g, '').replace(',', '.');
-        return parseFloat(priceStr);
-    }).filter(p => p >= 100 && p <= 500000);
+        // Extract product name
+        const nameMatch = cardContent.match(/<span[^>]*class="product-name"[^>]*>\s*(?:<!--[^>]*-->)?\s*([^<]+)/i);
+        const name = nameMatch ? nameMatch[1].trim() : null;
 
-    console.log(`Extracted: ${brands.length} brands, ${names.length} names, ${prices.length} prices`);
+        // Extract price - try multiple patterns
+        // Pattern 1: product-price class (16.999 TL)
+        // Pattern 2: price-section class (9.899,01 TL)
+        let price = null;
+        const pricePatterns = [
+            /class="product-price"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="price-section"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            />([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?)\s*TL/i  // General pattern for formatted prices
+        ];
 
-    // Build products - the elements should be in order
-    const count = Math.min(names.length, prices.length, 30);
-    for (let i = 0; i < count; i++) {
-        const brand = brands[i] || null;
-        const name = names[i];
-        const fullName = brand ? `${brand} ${name}` : name;
+        for (const pattern of pricePatterns) {
+            const priceMatch = cardContent.match(pattern);
+            if (priceMatch) {
+                // Convert Turkish format: 16.999 -> 16999 or 9.899,01 -> 9899.01
+                let priceStr = priceMatch[1].replace(/\./g, '').replace(',', '.');
+                price = parseFloat(priceStr);
+                if (price >= 100 && price <= 500000) {
+                    break;
+                }
+                price = null;  // Invalid price, try next pattern
+            }
+        }
 
-        products.push({
-            name: fullName,
-            price: prices[i],
-            originalPrice: null,
-            imageUrl: null,
-            productUrl: null,
-            brand: brand,
-            seller: null,
-            store: 'Trendyol'
-        });
+        // Extract product URL
+        const urlMatch = card.match(/href="([^"]*-p-[0-9]+[^"]*)"/i);
+        const productUrl = urlMatch ? 'https://www.trendyol.com' + urlMatch[1] : null;
+
+        // Extract image URL
+        const imgMatch = cardContent.match(/(?:data-src|src)="(https:\/\/cdn\.dsmcdn\.com\/[^"]*(?:zoom|product)[^"]*)"/i);
+        const imageUrl = imgMatch ? imgMatch[1].replace(/\\u002F/g, '/') : null;
+
+        if (name && price) {
+            products.push({
+                name: brand ? `${brand} ${name}` : name,
+                price: price,
+                originalPrice: null,
+                imageUrl: imageUrl,
+                productUrl: productUrl,
+                brand: brand,
+                seller: null,
+                store: 'Trendyol'
+            });
+        }
     }
 
     console.log(`Final: ${products.length} products`);
