@@ -145,59 +145,92 @@ app.get('/api/search/all', async (req, res) => {
 function parseProducts(html) {
     const products = [];
 
-    // Use a comprehensive regex to find brand-name sequences followed by prices
-    // This matches the pattern: brand span, then name span, then eventually a price
-    const productPattern = /<span[^>]*class="product-brand"[^>]*>([^<]+)<[\s\S]*?<span[^>]*class="product-name"[^>]*>\s*(?:<!--[^>]*-->)?\s*([^<]+)</g;
+    // Parse seller-store product cards - they have a clean structure:
+    // <a class="seller-store-product-card" href="/url-p-123">
+    //   <img class="product-image" src="https://cdn...">
+    //   <p class="product-name"><strong class="product-brand">Brand</strong>Name</p>
+    //   <span class="product-price">16.999 TL</span>
+    // </a>
 
-    const productMatches = [...html.matchAll(productPattern)];
-    console.log(`Found ${productMatches.length} brand-name pairs`);
+    // Split by seller-store-product-card
+    const cardMarker = 'class="seller-store-product-card"';
+    const parts = html.split(cardMarker);
+    console.log(`Found ${parts.length - 1} seller-store cards`);
 
-    // Extract all prices with their positions
-    const pricePattern = /class="(?:product-price|price-value|price-section)"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/gi;
-    const priceMatches = [...html.matchAll(pricePattern)];
-    const prices = priceMatches.map(m => ({
-        value: parseFloat(m[1].replace(/\./g, '').replace(',', '.')),
-        position: m.index
-    })).filter(p => p.value >= 500 && p.value <= 500000);
+    for (let i = 1; i < parts.length && products.length < 30; i++) {
+        const cardContent = parts[i].substring(0, 2000);  // Each card content
 
-    console.log(`Found ${prices.length} valid prices`);
+        // Also get the href from before the marker (in the <a> tag opening)
+        const precedingContent = parts[i - 1].slice(-300);
+        const hrefMatch = precedingContent.match(/href="([^"]*-p-[0-9]+[^"]*)"\s*$/);
+        const productUrl = hrefMatch ? 'https://www.trendyol.com' + hrefMatch[1] : null;
 
-    // Match each brand-name with the closest price that comes AFTER it
-    for (const productMatch of productMatches) {
-        if (products.length >= 30) break;
+        // Extract brand from <strong class="product-brand">
+        const brandMatch = cardContent.match(/class="product-brand"[^>]*>([^<]+)/i);
+        const brand = brandMatch ? brandMatch[1].trim() : null;
 
-        const brand = productMatch[1].trim();
-        const name = productMatch[2].trim();
-        const matchPosition = productMatch.index;
+        // Extract full product name (brand is usually followed by the name)
+        // Pattern: <p class="product-name"...><strong...>Brand</strong>Name</p>
+        const nameMatch = cardContent.match(/class="product-name"[^>]*>(?:<strong[^>]*>[^<]*<\/strong>)?([^<]+)/i);
+        const name = nameMatch ? nameMatch[1].trim() : null;
 
-        // Find the first price that comes after this product in the HTML
-        const matchingPrice = prices.find(p => p.position > matchPosition && p.position < matchPosition + 3000);
+        // Extract price from <span class="product-price">
+        const priceMatch = cardContent.match(/class="product-price"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i);
+        let price = null;
+        if (priceMatch) {
+            price = parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.'));
+        }
 
-        if (matchingPrice) {
-            // Get URL and image from context around the product
-            const contextStart = Math.max(0, matchPosition - 300);
-            const context = html.substring(contextStart, matchPosition + 1500);
+        // Extract image URL
+        const imgMatch = cardContent.match(/class="product-image"[^>]*src="([^"]+)"/i);
+        const imageUrl = imgMatch ? imgMatch[1] : null;
 
-            const urlMatch = context.match(/href="([^"]*-p-[0-9]+[^"]*)"/i);
-            const productUrl = urlMatch ? 'https://www.trendyol.com' + urlMatch[1] : null;
+        // Skip if we don't have essential data
+        if (!price || price < 100) continue;
 
-            const imgMatch = context.match(/(?:data-src|src)="(https:\/\/cdn\.dsmcdn\.com[^"]*\/prod[^"]*\.jpg)"/i);
-            const imageUrl = imgMatch ? imgMatch[1] : null;
+        const fullName = brand && name ? `${brand} ${name}` : (name || 'Unknown Product');
 
-            products.push({
-                name: `${brand} ${name}`,
-                price: matchingPrice.value,
-                originalPrice: null,
-                imageUrl: imageUrl,
-                productUrl: productUrl,
-                brand: brand,
-                seller: null,
-                store: 'Trendyol'
-            });
+        products.push({
+            name: fullName,
+            price: price,
+            originalPrice: null,
+            imageUrl: imageUrl,
+            productUrl: productUrl,
+            brand: brand,
+            seller: null,
+            store: 'Trendyol'
+        });
+    }
 
-            // Remove used price to prevent double-matching
-            const priceIdx = prices.indexOf(matchingPrice);
-            if (priceIdx > -1) prices.splice(priceIdx, 1);
+    // Also try to parse regular product cards if we don't have enough products
+    if (products.length < 10) {
+        console.log(`Only ${products.length} from seller cards, trying regular cards...`);
+
+        // Parse regular product cards with info-wrapper structure
+        const infoWrapperPattern = /class="info-wrapper"[\s\S]*?class="product-brand"[^>]*>([^<]+)[\s\S]*?class="product-name"[^>]*>([^<]+)[\s\S]*?class="price-(?:section|value)"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/gi;
+
+        let match;
+        while ((match = infoWrapperPattern.exec(html)) !== null && products.length < 30) {
+            const brand = match[1].trim();
+            const name = match[2].trim();
+            const price = parseFloat(match[3].replace(/\./g, '').replace(',', '.'));
+
+            if (price >= 100 && price <= 500000) {
+                // Check if we already have this product (by name)
+                const exists = products.some(p => p.name.includes(name.substring(0, 20)));
+                if (!exists) {
+                    products.push({
+                        name: `${brand} ${name}`,
+                        price: price,
+                        originalPrice: null,
+                        imageUrl: null,
+                        productUrl: null,
+                        brand: brand,
+                        seller: null,
+                        store: 'Trendyol'
+                    });
+                }
+            }
         }
     }
 
