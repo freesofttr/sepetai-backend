@@ -64,17 +64,28 @@ app.get('/api/search/all', async (req, res) => {
     console.log(`Searching for "${q}" on all stores...`);
 
     try {
-        const [trendyol, hepsiburada, n11] = await Promise.allSettled([
-            scrapeTrendyol(q),
-            scrapeHepsiburada(q),
-            scrapeN11(q)
-        ]);
+        // Try Trendyol API first (faster and more reliable)
+        let products = await fetchTrendyolAPI(q);
 
-        const products = [
-            ...(trendyol.status === 'fulfilled' ? trendyol.value : []),
-            ...(hepsiburada.status === 'fulfilled' ? hepsiburada.value : []),
-            ...(n11.status === 'fulfilled' ? n11.value : [])
-        ];
+        if (products.length === 0) {
+            console.log('API failed, trying Playwright scraping...');
+            // Fallback to scraping
+            const [trendyol, hepsiburada, n11] = await Promise.allSettled([
+                scrapeTrendyol(q),
+                scrapeHepsiburada(q),
+                scrapeN11(q)
+            ]);
+
+            console.log('Trendyol scrape:', trendyol.status, trendyol.status === 'rejected' ? trendyol.reason : `${trendyol.value?.length} products`);
+            console.log('Hepsiburada scrape:', hepsiburada.status, hepsiburada.status === 'rejected' ? hepsiburada.reason : `${hepsiburada.value?.length} products`);
+            console.log('N11 scrape:', n11.status, n11.status === 'rejected' ? n11.reason : `${n11.value?.length} products`);
+
+            products = [
+                ...(trendyol.status === 'fulfilled' ? trendyol.value : []),
+                ...(hepsiburada.status === 'fulfilled' ? hepsiburada.value : []),
+                ...(n11.status === 'fulfilled' ? n11.value : [])
+            ];
+        }
 
         console.log(`Found ${products.length} total products`);
         res.json({
@@ -88,14 +99,75 @@ app.get('/api/search/all', async (req, res) => {
     }
 });
 
+// Trendyol API (faster than scraping)
+async function fetchTrendyolAPI(query) {
+    const fetch = (await import('node-fetch')).default;
+
+    const endpoints = [
+        'https://public.trendyol.com/discovery-web-searchgw-service/v2/api/infinite-scroll/sr',
+        'https://public-mdc.trendyol.com/discovery-web-searchgw-service/v2/api/infinite-scroll/sr'
+    ];
+
+    for (const baseUrl of endpoints) {
+        try {
+            const url = `${baseUrl}?q=${encodeURIComponent(query)}&qt=${encodeURIComponent(query)}&st=${encodeURIComponent(query)}&os=1&pi=1&culture=tr-TR&pId=0&storefrontId=1&language=tr`;
+
+            console.log(`Trying Trendyol API: ${url}`);
+
+            const response = await fetch(url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'application/json',
+                    'Accept-Language': 'tr-TR,tr;q=0.9',
+                    'Origin': 'https://www.trendyol.com',
+                    'Referer': `https://www.trendyol.com/sr?q=${encodeURIComponent(query)}`
+                }
+            });
+
+            console.log(`API response status: ${response.status}`);
+
+            if (!response.ok) {
+                console.log(`API returned ${response.status}, trying next endpoint...`);
+                continue;
+            }
+
+            const data = await response.json();
+            const apiProducts = data?.result?.products || [];
+
+            console.log(`API returned ${apiProducts.length} products`);
+
+            if (apiProducts.length > 0) {
+                return apiProducts.slice(0, 20).map(p => ({
+                    name: p.name,
+                    price: p.price?.sellingPrice || 0,
+                    originalPrice: p.price?.originalPrice !== p.price?.sellingPrice ? p.price?.originalPrice : null,
+                    imageUrl: p.images?.[0] ? `https://cdn.dsmcdn.com${p.images[0]}` : null,
+                    productUrl: p.url ? `https://www.trendyol.com${p.url}` : null,
+                    brand: p.brand?.name || null,
+                    seller: p.merchantName || null,
+                    store: 'Trendyol'
+                }));
+            }
+        } catch (error) {
+            console.error(`API error for ${baseUrl}:`, error.message);
+        }
+    }
+
+    return [];
+}
+
 // Trendyol scraper
 async function scrapeTrendyol(query) {
-    const browser = await chromium.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
+    console.log('Starting Trendyol scraper...');
+    let browser;
 
     try {
+        browser = await chromium.launch({
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+        });
+        console.log('Browser launched');
+
         const context = await browser.newContext({
             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             locale: 'tr-TR'
@@ -105,20 +177,30 @@ async function scrapeTrendyol(query) {
         const url = `https://www.trendyol.com/sr?q=${encodeURIComponent(query)}`;
 
         console.log(`Navigating to: ${url}`);
-        await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        console.log('Page loaded');
 
         // Wait for products to load
-        await page.waitForSelector('.p-card-wrppr', { timeout: 10000 }).catch(() => {});
+        try {
+            await page.waitForSelector('.p-card-wrppr', { timeout: 10000 });
+            console.log('Product cards found');
+        } catch (e) {
+            console.log('Product cards not found, checking page content...');
+            const content = await page.content();
+            console.log('Page length:', content.length);
+            console.log('Page preview:', content.substring(0, 500));
+        }
 
         // Add random delay to seem more human
-        await page.waitForTimeout(1000 + Math.random() * 2000);
+        await page.waitForTimeout(2000);
 
         const products = await page.evaluate(() => {
             const items = document.querySelectorAll('.p-card-wrppr');
+            console.log('Found items:', items.length);
             const results = [];
 
             items.forEach((item, index) => {
-                if (index >= 20) return; // Limit to 20 products
+                if (index >= 20) return;
 
                 try {
                     const nameEl = item.querySelector('.prdct-desc-cntnr-name');
@@ -146,27 +228,37 @@ async function scrapeTrendyol(query) {
                         });
                     }
                 } catch (e) {
-                    console.error('Error parsing product:', e);
+                    // Skip this product
                 }
             });
 
             return results;
         });
 
+        console.log(`Scraped ${products.length} products from Trendyol`);
         return products;
+    } catch (error) {
+        console.error('Trendyol scraper error:', error.message);
+        return [];
     } finally {
-        await browser.close();
+        if (browser) {
+            await browser.close();
+            console.log('Browser closed');
+        }
     }
 }
 
 // Hepsiburada scraper
 async function scrapeHepsiburada(query) {
-    const browser = await chromium.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
+    console.log('Starting Hepsiburada scraper...');
+    let browser;
 
     try {
+        browser = await chromium.launch({
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+        });
+
         const context = await browser.newContext({
             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             locale: 'tr-TR'
@@ -176,10 +268,15 @@ async function scrapeHepsiburada(query) {
         const url = `https://www.hepsiburada.com/ara?q=${encodeURIComponent(query)}`;
 
         console.log(`Navigating to: ${url}`);
-        await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-        await page.waitForSelector('[data-test-id="product-card-name"]', { timeout: 10000 }).catch(() => {});
-        await page.waitForTimeout(1000 + Math.random() * 2000);
+        try {
+            await page.waitForSelector('[data-test-id="product-card-name"]', { timeout: 10000 });
+        } catch (e) {
+            console.log('Hepsiburada product cards not found');
+        }
+
+        await page.waitForTimeout(2000);
 
         const products = await page.evaluate(() => {
             const items = document.querySelectorAll('li[class*="productListContent"]');
@@ -212,27 +309,34 @@ async function scrapeHepsiburada(query) {
                         });
                     }
                 } catch (e) {
-                    console.error('Error parsing product:', e);
+                    // Skip
                 }
             });
 
             return results;
         });
 
+        console.log(`Scraped ${products.length} products from Hepsiburada`);
         return products;
+    } catch (error) {
+        console.error('Hepsiburada scraper error:', error.message);
+        return [];
     } finally {
-        await browser.close();
+        if (browser) await browser.close();
     }
 }
 
 // N11 scraper
 async function scrapeN11(query) {
-    const browser = await chromium.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
+    console.log('Starting N11 scraper...');
+    let browser;
 
     try {
+        browser = await chromium.launch({
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+        });
+
         const context = await browser.newContext({
             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             locale: 'tr-TR'
@@ -242,10 +346,15 @@ async function scrapeN11(query) {
         const url = `https://www.n11.com/arama?q=${encodeURIComponent(query)}`;
 
         console.log(`Navigating to: ${url}`);
-        await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-        await page.waitForSelector('.columnContent', { timeout: 10000 }).catch(() => {});
-        await page.waitForTimeout(1000 + Math.random() * 2000);
+        try {
+            await page.waitForSelector('.columnContent', { timeout: 10000 });
+        } catch (e) {
+            console.log('N11 product cards not found');
+        }
+
+        await page.waitForTimeout(2000);
 
         const products = await page.evaluate(() => {
             const items = document.querySelectorAll('.columnContent .pro');
@@ -278,16 +387,20 @@ async function scrapeN11(query) {
                         });
                     }
                 } catch (e) {
-                    console.error('Error parsing product:', e);
+                    // Skip
                 }
             });
 
             return results;
         });
 
+        console.log(`Scraped ${products.length} products from N11`);
         return products;
+    } catch (error) {
+        console.error('N11 scraper error:', error.message);
+        return [];
     } finally {
-        await browser.close();
+        if (browser) await browser.close();
     }
 }
 
