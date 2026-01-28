@@ -187,20 +187,24 @@ app.get('/api/debug/html', async (req, res) => {
 });
 
 // Price refresh endpoint - get current prices for saved products
+// Accepts: { products: [{productId, productUrl}] }
 app.post('/api/products/refresh', async (req, res) => {
-    const { productIds } = req.body;
-    if (!productIds || !Array.isArray(productIds) || productIds.length === 0) {
-        return res.status(400).json({ error: 'productIds array required' });
+    const { products } = req.body;
+    if (!products || !Array.isArray(products) || products.length === 0) {
+        return res.status(400).json({ error: 'products array required' });
     }
 
-    // Limit to 20 products per request
-    const ids = productIds.slice(0, 20);
-    console.log(`Price refresh for ${ids.length} products`);
+    // Limit to 10 products per request (ScraperAPI credits)
+    const items = products.slice(0, 10);
+    console.log(`Price refresh for ${items.length} products`);
 
     const results = [];
-    for (const productId of ids) {
+    for (const item of items) {
+        const productId = item.productId || item;
+        const productUrl = item.productUrl || null;
+
         try {
-            // Check price cache first (5 min TTL for individual products)
+            // Check price cache first (5 min TTL)
             const priceCacheKey = `price:${productId}`;
             const { data: cachedPrice } = getCached(priceCacheKey);
             if (cachedPrice) {
@@ -208,15 +212,26 @@ app.post('/api/products/refresh', async (req, res) => {
                 continue;
             }
 
-            const priceData = await fetchProductPrice(productId);
-            if (priceData) {
-                // Cache individual prices for 5 minutes
-                cache.set(priceCacheKey, { data: priceData, timestamp: Date.now() });
-                results.push(priceData);
+            // First try: check if product exists in any cached search results
+            let priceFromCache = findPriceInSearchCache(productId);
+            if (priceFromCache) {
+                cache.set(priceCacheKey, { data: priceFromCache, timestamp: Date.now() });
+                results.push(priceFromCache);
+                continue;
             }
 
-            // Small delay between requests
-            await new Promise(resolve => setTimeout(resolve, 500));
+            // Second try: scrape the product page directly
+            if (productUrl) {
+                const priceData = await scrapeProductPrice(productId, productUrl);
+                if (priceData && !priceData.error) {
+                    cache.set(priceCacheKey, { data: priceData, timestamp: Date.now() });
+                    results.push(priceData);
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    continue;
+                }
+            }
+
+            results.push({ productId, error: 'Could not fetch price', lastChecked: Date.now() });
         } catch (e) {
             console.error(`Price refresh failed for ${productId}: ${e.message}`);
             results.push({ productId, error: e.message });
@@ -226,60 +241,48 @@ app.post('/api/products/refresh', async (req, res) => {
     res.json({ products: results });
 });
 
-async function fetchProductPrice(productId) {
+// Look for product price in existing search cache
+function findPriceInSearchCache(productId) {
+    for (const [key, item] of cache.entries()) {
+        if (!key.startsWith('search:')) continue;
+        const age = Date.now() - item.timestamp;
+        if (age > CACHE_STALE_TTL) continue;
+
+        const product = item.data?.products?.find(p => p.productId === productId);
+        if (product) {
+            console.log(`Found price for ${productId} in search cache: ${product.price}`);
+            return {
+                productId,
+                currentPrice: product.price,
+                originalPrice: product.originalPrice || null,
+                lastChecked: Date.now()
+            };
+        }
+    }
+    return null;
+}
+
+// Scrape current price from Trendyol product page
+async function scrapeProductPrice(productId, productUrl) {
     const fetch = (await import('node-fetch')).default;
 
-    // Try Trendyol's public product detail API
     try {
-        const apiUrl = `https://public.trendyol.com/discovery-web-productgw-service/api/productDetail/${productId}`;
-        const response = await fetch(apiUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-                'Accept': 'application/json',
-                'Accept-Language': 'tr-TR,tr;q=0.9'
-            },
-            timeout: 10000
-        });
-
-        if (response.ok) {
-            const data = await response.json();
-            const result = data?.result;
-            if (result) {
-                const price = result.price;
-                return {
-                    productId,
-                    currentPrice: price?.sellingPrice?.value || price?.discountedPrice?.value || null,
-                    originalPrice: price?.originalPrice?.value || null,
-                    name: result.name || null,
-                    inStock: result.hasStock !== false,
-                    lastChecked: Date.now()
-                };
-            }
-        }
-        console.log(`Trendyol API returned ${response.status} for product ${productId}`);
-    } catch (e) {
-        console.log(`Trendyol API failed for ${productId}: ${e.message}`);
-    }
-
-    // Fallback: scrape the product page via ScraperAPI
-    try {
-        const productUrl = `https://www.trendyol.com/-p-${productId}`;
         const apiUrl = `https://api.scraperapi.com/?api_key=${API_KEY}&url=${encodeURIComponent(productUrl)}&country_code=tr`;
+        console.log(`Scraping price for ${productId}: ${productUrl.substring(0, 60)}...`);
 
         const response = await fetch(apiUrl, { timeout: 30000 });
         if (!response.ok) throw new Error(`ScraperAPI: ${response.status}`);
 
         const html = await response.text();
 
-        // Extract price from product detail page
         let currentPrice = null;
         let originalPrice = null;
 
-        // Product detail pages have more specific price selectors
         const pricePatterns = [
-            /class="[^"]*product-price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
             /class="[^"]*prc-dsc[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="[^"]*product-price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
             /class="[^"]*sale-price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="[^"]*price-value[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
             />([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?)\s*TL</i
         ];
 
@@ -292,7 +295,6 @@ async function fetchProductPrice(productId) {
             }
         }
 
-        // Original price
         const orgPatterns = [
             /class="[^"]*prc-org[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
             /class="[^"]*old-price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i
@@ -310,20 +312,15 @@ async function fetchProductPrice(productId) {
         }
 
         if (currentPrice) {
-            return {
-                productId,
-                currentPrice,
-                originalPrice,
-                name: null,
-                inStock: true,
-                lastChecked: Date.now()
-            };
+            console.log(`Price for ${productId}: ${currentPrice} TL`);
+            return { productId, currentPrice, originalPrice, lastChecked: Date.now() };
         }
-    } catch (e) {
-        console.log(`ScraperAPI fallback failed for ${productId}: ${e.message}`);
-    }
 
-    return { productId, error: 'Could not fetch price', lastChecked: Date.now() };
+        return { productId, error: 'Price not found in HTML', lastChecked: Date.now() };
+    } catch (e) {
+        console.log(`Scrape failed for ${productId}: ${e.message}`);
+        return { productId, error: e.message, lastChecked: Date.now() };
+    }
 }
 
 app.get('/api/search/all', async (req, res) => {
