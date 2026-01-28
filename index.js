@@ -159,14 +159,19 @@ function parseProducts(html) {
         const nameMatch = cardContent.match(/<span[^>]*class="product-name"[^>]*>\s*(?:<!--[^>]*-->)?\s*([^<]+)/i);
         const name = nameMatch ? nameMatch[1].trim() : null;
 
-        // Extract price - try multiple patterns
-        // Pattern 1: product-price class (16.999 TL)
-        // Pattern 2: price-section class (9.899,01 TL)
+        // Extract price - try multiple patterns from Trendyol HTML
+        // Known patterns:
+        // - class="product-price" data-testid="seller-store-product-card-price">16.999 TL
+        // - class="price-value">9.899,01 TL
+        // - class="price-section">9.899,01 TL
         let price = null;
         const pricePatterns = [
             /class="product-price"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="price-value"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
             /class="price-section"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            />([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?)\s*TL/i  // General pattern for formatted prices
+            /class="discounted-price"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /data-testid="[^"]*price[^"]*"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            />([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?)\s*TL</i  // General pattern with closing <
         ];
 
         for (const pattern of pricePatterns) {
