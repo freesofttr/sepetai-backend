@@ -75,6 +75,14 @@ async function scrapeStore(query, store) {
         amazon: {
             url: `https://www.amazon.com.tr/s?k=${encodeURIComponent(query)}`,
             parser: parseAmazonProducts
+        },
+        pttavm: {
+            url: `https://www.pttavm.com/arama?q=${encodeURIComponent(query)}`,
+            parser: parsePttavmProducts
+        },
+        pazarama: {
+            url: `https://www.pazarama.com/arama?q=${encodeURIComponent(query)}`,
+            parser: parsePazaramaProducts
         }
     };
 
@@ -103,19 +111,23 @@ async function scrapeStore(query, store) {
 
 async function fetchAndCacheSearch(query) {
     // Scrape all stores in parallel (N11 disabled - returns empty HTML via ScraperAPI)
-    const [trendyolProducts, hepsiburadaProducts, amazonProducts] = await Promise.all([
+    const [trendyolProducts, hepsiburadaProducts, amazonProducts, pttavmProducts, pazaramaProducts] = await Promise.all([
         scrapeStore(query, 'trendyol'),
         scrapeStore(query, 'hepsiburada'),
-        scrapeStore(query, 'amazon')
+        scrapeStore(query, 'amazon'),
+        scrapeStore(query, 'pttavm'),
+        scrapeStore(query, 'pazarama')
     ]);
 
     const allProducts = [
         ...trendyolProducts,
         ...hepsiburadaProducts,
-        ...amazonProducts
+        ...amazonProducts,
+        ...pttavmProducts,
+        ...pazaramaProducts
     ];
 
-    console.log(`Total scraped from all stores: ${allProducts.length} (T:${trendyolProducts.length} H:${hepsiburadaProducts.length} A:${amazonProducts.length})`);
+    console.log(`Total scraped from all stores: ${allProducts.length} (T:${trendyolProducts.length} H:${hepsiburadaProducts.length} A:${amazonProducts.length} P:${pttavmProducts.length} Z:${pazaramaProducts.length})`);
 
     // Apply smart filtering
     const filtered = smartFilterProducts(query, allProducts);
@@ -1194,6 +1206,246 @@ function parseAmazonProducts(html) {
     }
 
     console.log(`Amazon parsed: ${products.length} products`);
+    return products;
+}
+
+// ==========================================
+// PTTAVM PARSER
+// ==========================================
+function parsePttavmProducts(html) {
+    const products = [];
+
+    // PTTAvm product links: href="/[product-slug]-p-[product-id]"
+    const productLinkRegex = /href="(\/[^"]*-p-(\d+))"/gi;
+    const productLinks = [];
+    let linkMatch;
+
+    while ((linkMatch = productLinkRegex.exec(html)) !== null) {
+        const pid = linkMatch[2];
+        if (productLinks.some(p => p.pid === pid)) continue;
+        productLinks.push({
+            href: linkMatch[1],
+            pid,
+            position: linkMatch.index
+        });
+    }
+
+    for (let i = 0; i < productLinks.length && products.length < 20; i++) {
+        const link = productLinks[i];
+        const contentStart = Math.max(0, link.position - 500);
+        const contentEnd = productLinks[i + 1]?.position || contentStart + 8000;
+        const cardContent = html.substring(contentStart, Math.min(contentEnd, contentStart + 8000));
+
+        // Extract name
+        const namePatterns = [
+            /class="[^"]*product[_-]?name[^"]*"[^>]*>([^<]+)/i,
+            /class="[^"]*product[_-]?title[^"]*"[^>]*>([^<]+)/i,
+            /title="([^"]{10,})"/i,
+            /alt="([^"]{10,})"/i
+        ];
+        let name = null;
+        for (const pattern of namePatterns) {
+            const m = cardContent.match(pattern);
+            if (m) { name = m[1].trim(); break; }
+        }
+
+        if (!name && link.href) {
+            const slug = link.href.split('-p-')[0].replace(/^\//, '');
+            name = slug.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        }
+
+        // Extract price
+        let price = null;
+        const pricePatterns = [
+            /class="[^"]*(?:sale|current|new)[_-]?price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            /class="[^"]*price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            /<strong[^>]*>\s*([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?)\s*(?:TL|₺)\s*<\/strong>/i,
+            />([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?)\s*(?:TL|₺)</i
+        ];
+        for (const pattern of pricePatterns) {
+            const m = cardContent.match(pattern);
+            if (m) {
+                price = parseFloat(m[1].replace(/\./g, '').replace(',', '.'));
+                if (price >= 1 && price <= 999999) break;
+                price = null;
+            }
+        }
+
+        // Extract original price
+        let originalPrice = null;
+        const orgPatterns = [
+            /class="[^"]*(?:old|original|list)[_-]?price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            /class="[^"]*line-through[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            /<del[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)\s*<\/del>/i,
+            /<s[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)\s*<\/s>/i
+        ];
+        for (const pattern of orgPatterns) {
+            const m = cardContent.match(pattern);
+            if (m) {
+                const op = parseFloat(m[1].replace(/\./g, '').replace(',', '.'));
+                if (op > 0 && price && op > price) { originalPrice = op; break; }
+            }
+        }
+
+        // Extract image
+        let imageUrl = null;
+        const imgMatch = cardContent.match(/src="(https:\/\/cdn-img\.pttavm\.com[^"]*\.(?:jpg|png|webp)[^"]*)"/i)
+            || cardContent.match(/data-src="(https:\/\/cdn-img\.pttavm\.com[^"]*\.(?:jpg|png|webp)[^"]*)"/i)
+            || cardContent.match(/src="(https:\/\/[^"]*\.(?:jpg|png|webp)[^"]*)"/i);
+        if (imgMatch) imageUrl = imgMatch[1];
+
+        if (!name || !price || price < 1) continue;
+
+        products.push({
+            name,
+            price,
+            originalPrice,
+            imageUrl,
+            productUrl: 'https://www.pttavm.com' + link.href,
+            productId: 'ptt-' + link.pid,
+            brand: null,
+            seller: null,
+            store: 'PttAvm'
+        });
+    }
+
+    // Fallback: try JSON-LD structured data
+    if (products.length === 0) {
+        const jsonLdRegex = /<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi;
+        let jsonMatch;
+        while ((jsonMatch = jsonLdRegex.exec(html)) !== null) {
+            try {
+                const data = JSON.parse(jsonMatch[1]);
+                if (data['@type'] === 'Product' || (Array.isArray(data) && data[0]?.['@type'] === 'Product')) {
+                    const items = Array.isArray(data) ? data : [data];
+                    for (const item of items) {
+                        if (products.length >= 20) break;
+                        const offer = item.offers || item.offers?.[0];
+                        const p = parseFloat(offer?.price || offer?.lowPrice || '0');
+                        if (item.name && p > 0) {
+                            products.push({
+                                name: item.name,
+                                price: p,
+                                originalPrice: null,
+                                imageUrl: item.image || null,
+                                productUrl: item.url ? (item.url.startsWith('http') ? item.url : 'https://www.pttavm.com' + item.url) : null,
+                                productId: 'ptt-' + (item.sku || Math.random().toString(36).slice(2, 10)),
+                                brand: null,
+                                seller: null,
+                                store: 'PttAvm'
+                            });
+                        }
+                    }
+                }
+            } catch (e) { /* ignore invalid JSON */ }
+        }
+    }
+
+    console.log(`PttAvm parsed: ${products.length} products`);
+    return products;
+}
+
+// ==========================================
+// PAZARAMA PARSER
+// ==========================================
+function parsePazaramaProducts(html) {
+    const products = [];
+
+    // Pazarama product links: href="/[product-slug]-p-[product-id]"
+    const productLinkRegex = /href="(\/[^"]*-p-(\d+))"/gi;
+    const productLinks = [];
+    let linkMatch;
+
+    while ((linkMatch = productLinkRegex.exec(html)) !== null) {
+        const pid = linkMatch[2];
+        if (productLinks.some(p => p.pid === pid)) continue;
+        productLinks.push({
+            href: linkMatch[1],
+            pid,
+            position: linkMatch.index
+        });
+    }
+
+    for (let i = 0; i < productLinks.length && products.length < 20; i++) {
+        const link = productLinks[i];
+        const contentStart = Math.max(0, link.position - 500);
+        const contentEnd = productLinks[i + 1]?.position || contentStart + 8000;
+        const cardContent = html.substring(contentStart, Math.min(contentEnd, contentStart + 8000));
+
+        // Extract name
+        const namePatterns = [
+            /class="[^"]*product[_-]?name[^"]*"[^>]*>([^<]+)/i,
+            /class="[^"]*product[_-]?title[^"]*"[^>]*>([^<]+)/i,
+            /title="([^"]{10,})"/i,
+            /alt="([^"]{10,})"/i
+        ];
+        let name = null;
+        for (const pattern of namePatterns) {
+            const m = cardContent.match(pattern);
+            if (m) { name = m[1].trim(); break; }
+        }
+
+        if (!name && link.href) {
+            const slug = link.href.split('-p-')[0].replace(/^\//, '');
+            name = slug.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        }
+
+        // Extract price
+        let price = null;
+        const pricePatterns = [
+            /class="[^"]*(?:sale|current|new|discounted)[_-]?price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            /class="[^"]*price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            />([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?)\s*(?:TL|₺)</i
+        ];
+        for (const pattern of pricePatterns) {
+            const m = cardContent.match(pattern);
+            if (m) {
+                price = parseFloat(m[1].replace(/\./g, '').replace(',', '.'));
+                if (price >= 1 && price <= 999999) break;
+                price = null;
+            }
+        }
+
+        // Extract original price
+        let originalPrice = null;
+        const orgPatterns = [
+            /class="[^"]*(?:old|original|list)[_-]?price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            /class="[^"]*line-through[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            /<del[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)\s*<\/del>/i,
+            /<s[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)\s*<\/s>/i
+        ];
+        for (const pattern of orgPatterns) {
+            const m = cardContent.match(pattern);
+            if (m) {
+                const op = parseFloat(m[1].replace(/\./g, '').replace(',', '.'));
+                if (op > 0 && price && op > price) { originalPrice = op; break; }
+            }
+        }
+
+        // Extract image
+        let imageUrl = null;
+        const imgMatch = cardContent.match(/src="(https:\/\/img\.pzrmcdn\.com[^"]*\.(?:jpg|png|webp)[^"]*)"/i)
+            || cardContent.match(/src="(https:\/\/img\.pzrmcdn\.com[^"]+)"/i)
+            || cardContent.match(/data-src="(https:\/\/[^"]*\.(?:jpg|png|webp)[^"]*)"/i)
+            || cardContent.match(/src="(https:\/\/[^"]*\.(?:jpg|png|webp)[^"]*)"/i);
+        if (imgMatch) imageUrl = imgMatch[1];
+
+        if (!name || !price || price < 1) continue;
+
+        products.push({
+            name,
+            price,
+            originalPrice,
+            imageUrl,
+            productUrl: 'https://www.pazarama.com' + link.href,
+            productId: 'pzr-' + link.pid,
+            brand: null,
+            seller: null,
+            store: 'Pazarama'
+        });
+    }
+
+    console.log(`Pazarama parsed: ${products.length} products`);
     return products;
 }
 
