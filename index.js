@@ -20,8 +20,8 @@ app.get('/api/debug/html', async (req, res) => {
     try {
         const fetch = (await import('node-fetch')).default;
         const targetUrl = `https://www.trendyol.com/sr?q=${encodeURIComponent(q)}`;
-        // Add wait parameter for ScraperAPI to wait longer for JS rendering
-        const apiUrl = `https://api.scraperapi.com/?api_key=${API_KEY}&url=${encodeURIComponent(targetUrl)}&render=true&country_code=tr&wait_for_selector=.p-card-wrppr`;
+        // ScraperAPI with render and premium for better JS execution
+        const apiUrl = `https://api.scraperapi.com/?api_key=${API_KEY}&url=${encodeURIComponent(targetUrl)}&render=true&country_code=tr`;
 
         const response = await fetch(apiUrl);
         const html = await response.text();
@@ -47,6 +47,14 @@ app.get('/api/debug/html', async (req, res) => {
         // Find any number patterns that could be prices (3-6 digit numbers)
         const priceNumbers = html.match(/>\s*(\d{2,3}(?:[\.,]\d{2})?)\s*TL/g) || [];
 
+        // Search for state/data script tags
+        const stateScriptMatch = html.match(/<script[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
+        const nuxtDataMatch = html.match(/<script[^>]*>window\.__NUXT__\s*=\s*([\s\S]*?)<\/script>/i);
+
+        // Look for any large JSON embedded in script tags
+        const allScriptContent = scripts.map(s => s.replace(/<\/?script[^>]*>/gi, '')).join('\n');
+        const hasProductInScripts = allScriptContent.includes('product');
+
         res.json({
             htmlLength: html.length,
             patterns,
@@ -56,7 +64,11 @@ app.get('/api/debug/html', async (req, res) => {
             tlPriceExamples: priceNumbers.slice(0, 10),
             htmlContainsProduct: html.toLowerCase().includes('product'),
             htmlContainsSearch: html.toLowerCase().includes('search'),
-            sampleMiddle: html.substring(Math.floor(html.length / 2), Math.floor(html.length / 2) + 3000)
+            hasNextData: !!stateScriptMatch,
+            hasNuxtData: !!nuxtDataMatch,
+            hasProductInScripts,
+            sampleEnd: html.substring(Math.max(0, html.length - 5000)),
+            sampleMiddle: html.substring(Math.floor(html.length / 2), Math.floor(html.length / 2) + 2000)
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
