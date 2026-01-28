@@ -283,7 +283,11 @@ function parseProducts(html) {
             continue;
         }
 
-        const productUrl = 'https://www.trendyol.com' + link.href.replace(/&amp;/g, '&');
+        // Clean the URL - remove HTML entities and query params for cleaner mobile experience
+        let cleanHref = link.href.replace(/&amp;/g, '&');
+        // Remove boutique and merchant IDs as they can cause issues
+        cleanHref = cleanHref.split('?')[0];
+        const productUrl = 'https://www.trendyol.com' + cleanHref;
         const fullName = brand && !name.toLowerCase().startsWith(brand.toLowerCase())
             ? `${brand} ${name}`
             : name;
