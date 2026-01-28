@@ -63,8 +63,20 @@ async function fetchAndCacheSearch(query) {
     if (!response.ok) throw new Error(`ScraperAPI: ${response.status}`);
 
     const html = await response.text();
-    const products = parseProducts(html);
-    const result = { query, count: products.length, products };
+    const rawProducts = parseProducts(html);
+
+    // Apply smart filtering
+    const filtered = smartFilterProducts(query, rawProducts);
+
+    const result = {
+        query,
+        count: filtered.products.length,
+        searchIntent: filtered.searchIntent,
+        totalScraped: filtered.totalScraped,
+        filteredCount: filtered.filteredCount,
+        removedCount: filtered.removedCount,
+        products: filtered.products
+    };
 
     setCache(`search:${query.toLowerCase()}`, result);
     return result;
@@ -205,11 +217,212 @@ app.get('/api/search/all', async (req, res) => {
     }
 });
 
+// ==========================================
+// SMART PRODUCT FILTERING
+// ==========================================
+
+const PRODUCT_CATEGORIES = {
+    phone: {
+        keywords: ['iphone', 'samsung galaxy', 'telefon', 'cep telefon', 'xiaomi', 'huawei', 'pixel', 'oppo', 'realme', 'oneplus', 'redmi', 'poco', 'iphone 15', 'iphone 14', 'iphone 16', 'galaxy s', 'galaxy a'],
+        excludeKeywords: ['kılıf', 'kilif', 'cam', 'ekran koruyucu', 'şarj', 'sarj', 'adaptör', 'adaptor', 'kablo', 'kordon', 'powerbank', 'tutucu', 'stand', 'temizleyici', 'sticker', 'çıkartma', 'cikartma', 'aksesuar', 'batarya', 'pil', 'lens', 'kapak', 'arka kapak', 'koruma', 'pencere', 'cam filmi', 'jelatin', 'tampon', 'bumper', 'cüzdan', 'cuzdan'],
+        intentLabel: 'Telefon',
+        mainProductIndicators: ['gb', 'tb', '128', '256', '512', '1tb', 'pro', 'pro max', 'ultra', 'plus', 'lite', 'note']
+    },
+    tablet: {
+        keywords: ['ipad', 'tablet', 'samsung tab', 'galaxy tab'],
+        excludeKeywords: ['kılıf', 'kilif', 'kalem', 'pencil', 'klavye', 'keyboard', 'cam', 'ekran koruyucu', 'stand', 'çanta', 'canta', 'şarj', 'sarj', 'adaptör', 'adaptor', 'koruyucu'],
+        intentLabel: 'Tablet',
+        mainProductIndicators: ['gb', 'wifi', 'cellular', 'pro', 'air', 'mini', '64', '128', '256']
+    },
+    laptop: {
+        keywords: ['laptop', 'notebook', 'bilgisayar', 'macbook', 'thinkpad', 'ideapad', 'vivobook', 'zenbook', 'gaming laptop'],
+        excludeKeywords: ['çanta', 'canta', 'kılıf', 'kilif', 'stand', 'soğutucu', 'sogutcu', 'mouse pad', 'mousepad', 'sticker', 'webcam', 'tutucu', 'koruyucu', 'temizleyici'],
+        intentLabel: 'Laptop',
+        mainProductIndicators: ['i5', 'i7', 'i9', 'ryzen', 'ram', 'ssd', 'intel', 'amd', 'ekran', 'ghz', 'core']
+    },
+    headphones: {
+        keywords: ['kulaklık', 'kulaklik', 'airpods', 'earbuds', 'headphone', 'earphone', 'bluetooth kulaklık'],
+        excludeKeywords: ['kılıf', 'kilif', 'yedek', 'uç', 'uc', 'sünger', 'sunger', 'kablo', 'şarj kutusu', 'aksesuar', 'adaptör', 'adaptor'],
+        intentLabel: 'Kulaklık',
+        mainProductIndicators: ['bluetooth', 'kablosuz', 'anc', 'gürültü', 'gurultu', 'tws', 'wireless']
+    },
+    shoes: {
+        keywords: ['ayakkabı', 'ayakkabi', 'sneaker', 'spor ayakkabı', 'bot', 'çizme', 'cizme', 'terlik', 'sandalet'],
+        excludeKeywords: ['bakım', 'bakim', 'sprey', 'boya', 'tabanlık', 'tabanlik', 'bağcık', 'bagcik', 'fırça', 'firca', 'temizleyici', 'koruyucu', 'yıkama', 'yikama'],
+        intentLabel: 'Ayakkabı',
+        mainProductIndicators: ['numara', 'beden']
+    },
+    watch: {
+        keywords: ['saat', 'akıllı saat', 'akilli saat', 'apple watch', 'smartwatch', 'kol saati'],
+        excludeKeywords: ['kordon', 'kayış', 'kayis', 'cam', 'ekran koruyucu', 'kılıf', 'kilif', 'şarj', 'sarj', 'stand', 'dock', 'aksesuar'],
+        intentLabel: 'Saat',
+        mainProductIndicators: ['mm', 'gps', 'cellular', 'bluetooth', 'series']
+    },
+    perfume: {
+        keywords: ['parfüm', 'parfum', 'edp', 'edt', 'eau de'],
+        excludeKeywords: ['deodorant', 'roll-on', 'vücut losyonu', 'vucut losyonu', 'sabun', 'duş jeli', 'dus jeli'],
+        intentLabel: 'Parfüm',
+        mainProductIndicators: ['ml', 'edp', 'edt', 'eau de parfum', 'eau de toilette']
+    },
+    tv: {
+        keywords: ['televizyon', 'tv', 'smart tv', 'led tv', 'oled', 'qled'],
+        excludeKeywords: ['kumanda', 'stand', 'askı', 'aski', 'duvar aparatı', 'aparati', 'kablo', 'hdmi', 'cam', 'ekran koruyucu'],
+        intentLabel: 'Televizyon',
+        mainProductIndicators: ['inç', 'inc', 'inch', 'cm', '4k', 'uhd', 'full hd', 'smart']
+    },
+    gaming: {
+        keywords: ['playstation', 'ps5', 'ps4', 'xbox', 'nintendo', 'switch', 'konsol'],
+        excludeKeywords: ['kılıf', 'kilif', 'koruyucu', 'stand', 'şarj', 'sarj', 'sticker', 'çıkartma', 'cikartma', 'çanta', 'canta', 'temizleyici'],
+        intentLabel: 'Oyun Konsolu',
+        mainProductIndicators: ['konsol', 'bundle', 'edition', 'dijital', 'digital', 'slim', 'pro']
+    }
+};
+
+// Accessory patterns - items that are almost always accessories
+const ACCESSORY_PATTERNS = [
+    'kılıf', 'kilif', 'cam', 'ekran koruyucu', 'koruyucu', 'şarj', 'sarj',
+    'adaptör', 'adaptor', 'kablo', 'kordon', 'kayış', 'kayis', 'powerbank',
+    'tutucu', 'stand', 'dock', 'temizleyici', 'sticker', 'çıkartma', 'cikartma',
+    'aksesuar', 'yedek', 'bağcık', 'bagcik', 'tabanlık', 'tabanlik',
+    'bakım', 'bakim', 'fırça', 'firca', 'sprey', 'aparatı', 'aparati',
+    'askı', 'aski', 'kumanda', 'mouse pad', 'mousepad', 'jelatin', 'film'
+];
+
+function analyzeSearchIntent(query) {
+    const queryLower = query.toLowerCase().trim();
+
+    for (const [category, config] of Object.entries(PRODUCT_CATEGORIES)) {
+        const matched = config.keywords.some(keyword => queryLower.includes(keyword));
+        if (matched) {
+            return {
+                category,
+                intentLabel: config.intentLabel,
+                excludeKeywords: config.excludeKeywords,
+                mainProductIndicators: config.mainProductIndicators,
+                originalQuery: query
+            };
+        }
+    }
+
+    return {
+        category: 'general',
+        intentLabel: 'Genel Arama',
+        excludeKeywords: [],
+        mainProductIndicators: [],
+        originalQuery: query
+    };
+}
+
+function classifyProduct(product, intent) {
+    const nameLower = product.name.toLowerCase();
+
+    // Check if product name contains accessory patterns
+    const matchedAccessoryPattern = ACCESSORY_PATTERNS.find(pattern => nameLower.includes(pattern));
+
+    // Check if product should be excluded based on intent
+    const matchedExcludeKeyword = intent.excludeKeywords.find(keyword => nameLower.includes(keyword));
+
+    // Check if it has main product indicators
+    const hasMainIndicator = intent.mainProductIndicators.some(ind => nameLower.includes(ind));
+
+    if (intent.category === 'general') {
+        return { type: 'Ana Ürün', confidence: 0.7, isRelevant: true };
+    }
+
+    if (matchedExcludeKeyword || matchedAccessoryPattern) {
+        // If it ALSO has main product indicators AND the name is long enough (real products have longer names)
+        if (hasMainIndicator && nameLower.length > 40 && !matchedAccessoryPattern) {
+            return { type: 'Ana Ürün', confidence: 0.6, isRelevant: true };
+        }
+        return { type: 'Aksesuar', confidence: 0.85, isRelevant: false };
+    }
+
+    if (hasMainIndicator) {
+        return { type: 'Ana Ürün', confidence: 0.9, isRelevant: true };
+    }
+
+    // Default - probably relevant but lower confidence
+    return { type: 'Ana Ürün', confidence: 0.65, isRelevant: true };
+}
+
+function analyzeDiscount(product) {
+    if (!product.originalPrice || product.originalPrice <= product.price) {
+        return { hasDiscount: false, discountPercentage: 0, status: 'normal', comment: null };
+    }
+
+    const discountPercent = Math.round((product.originalPrice - product.price) / product.originalPrice * 100);
+
+    if (discountPercent > 70) {
+        return {
+            hasDiscount: true,
+            discountPercentage: discountPercent,
+            status: 'suspicious',
+            comment: 'Şüpheli indirim oranı'
+        };
+    }
+
+    if (discountPercent >= 20) {
+        return {
+            hasDiscount: true,
+            discountPercentage: discountPercent,
+            status: 'good_deal',
+            comment: `%${discountPercent} indirim`
+        };
+    }
+
+    return {
+        hasDiscount: true,
+        discountPercentage: discountPercent,
+        status: 'minor_discount',
+        comment: `%${discountPercent} indirim`
+    };
+}
+
+function smartFilterProducts(query, products) {
+    const intent = analyzeSearchIntent(query);
+    console.log(`Search intent: ${intent.intentLabel} (${intent.category})`);
+
+    const analyzed = products.map(product => {
+        const classification = classifyProduct(product, intent);
+        const discount = analyzeDiscount(product);
+
+        return {
+            ...product,
+            relevanceScore: classification.confidence,
+            classification: classification.type,
+            isRelevant: classification.isRelevant,
+            discountStatus: discount.status,
+            discountPercentage: discount.discountPercentage || 0,
+            shortComment: discount.comment || null
+        };
+    });
+
+    // Filter: relevant products first, sorted by confidence
+    const relevant = analyzed
+        .filter(p => p.isRelevant)
+        .sort((a, b) => b.relevanceScore - a.relevanceScore);
+
+    const removed = analyzed.filter(p => !p.isRelevant);
+
+    console.log(`Smart filter: ${relevant.length} relevant, ${removed.length} accessories removed`);
+
+    return {
+        searchIntent: intent.intentLabel,
+        totalScraped: products.length,
+        filteredCount: relevant.length,
+        removedCount: removed.length,
+        products: relevant
+    };
+}
+
+// ==========================================
+// HTML PARSING
+// ==========================================
+
 function parseProducts(html) {
     const products = [];
 
-    // New approach: Find all product links first, then extract info
-    // Product links have pattern: href="/brand/product-name-p-123456?..."
+    // Find all product links: href="/brand/product-name-p-123456?..."
     const productLinkRegex = /href="(\/[^"]*-p-([0-9]+)[^"]*)"/gi;
     const productLinks = [];
     let linkMatch;
@@ -224,30 +437,24 @@ function parseProducts(html) {
 
     console.log(`Found ${productLinks.length} product links`);
 
-    // Process each product link
     for (let i = 0; i < productLinks.length && products.length < 30; i++) {
         const link = productLinks[i];
 
-        // Skip if we already have this product ID
         if (products.some(p => p.productId === link.productId)) continue;
 
-        // Get content after this link (the product card content)
-        // Use larger window since price might be far from the link
         const contentStart = link.position;
         const contentEnd = productLinks[i + 1]?.position || contentStart + 8000;
         const cardContent = html.substring(contentStart, Math.min(contentEnd, contentStart + 8000));
 
-        // Extract brand from product-brand span
+        // Extract brand
         const brandMatch = cardContent.match(/class="product-brand"[^>]*>([^<]+)/i);
         const brand = brandMatch ? brandMatch[1].trim() : null;
 
-        // Extract product name - handle <!-- --> comment
+        // Extract product name
         const nameMatch = cardContent.match(/class="product-name"[^>]*>(?:\s*<!--[\s\S]*?-->)?\s*([^<]+)/i);
         let name = nameMatch ? nameMatch[1].trim() : null;
 
-        // If no name found, try to extract from href
         if (!name && link.href) {
-            // href format: /brand/product-name-here-p-123
             const hrefParts = link.href.split('/');
             if (hrefParts.length >= 3) {
                 const productSlug = hrefParts[2].split('-p-')[0];
@@ -255,19 +462,15 @@ function parseProducts(html) {
             }
         }
 
-        // Extract price - try multiple patterns
-        // Turkish price format: 47.999 TL (dot as thousands separator) or 47.999,99 TL (with decimal)
+        // Extract current/sale price
         let price = null;
         const pricePatterns = [
-            // Class-based patterns
-            /class="price-section"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            /class="single-price"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            /class="sale-price"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            /class="discounted-price"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            /class="price-value"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            // Generic patterns - match prices like 47.999 TL, 1.234.567 TL
+            /class="[^"]*sale-price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="[^"]*discounted-price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="[^"]*price-section[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="[^"]*single-price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="[^"]*price-value[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
             />([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?)\s*TL</i,
-            // Simple number followed by TL
             />([0-9]+(?:\.[0-9]+)?)\s*TL</i
         ];
 
@@ -275,8 +478,29 @@ function parseProducts(html) {
             const priceMatch = cardContent.match(pattern);
             if (priceMatch) {
                 price = parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.'));
-                if (price >= 100 && price <= 500000) break;
+                if (price >= 1 && price <= 999999) break;
                 price = null;
+            }
+        }
+
+        // Extract original/old price (strikethrough price)
+        let originalPrice = null;
+        const originalPricePatterns = [
+            /class="[^"]*(?:old|original|org)[^"]*price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="[^"]*prc-org[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="[^"]*line-through[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /text-decoration:\s*line-through[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /<del[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL\s*<\/del>/i
+        ];
+
+        for (const pattern of originalPricePatterns) {
+            const orgMatch = cardContent.match(pattern);
+            if (orgMatch) {
+                const orgPrice = parseFloat(orgMatch[1].replace(/\./g, '').replace(',', '.'));
+                if (orgPrice > 0 && price && orgPrice > price) {
+                    originalPrice = orgPrice;
+                    break;
+                }
             }
         }
 
@@ -294,30 +518,25 @@ function parseProducts(html) {
             }
         }
 
-        // Skip if we don't have essential data
-        if (!name || !price || price < 100) {
-            // Debug: Log first few skipped products
+        if (!name || !price || price < 1) {
             if (i < 5) {
                 console.log(`Skipped product ${link.productId}: name=${name ? 'yes' : 'no'}, price=${price}`);
             }
             continue;
         }
 
-        // Clean the URL - remove HTML entities and query params for cleaner mobile experience
+        // Clean URL
         let cleanHref = link.href.replace(/&amp;/g, '&');
-        // Remove boutique and merchant IDs as they can cause issues
         cleanHref = cleanHref.split('?')[0];
         const productUrl = 'https://www.trendyol.com' + cleanHref;
         const fullName = brand && !name.toLowerCase().startsWith(brand.toLowerCase())
             ? `${brand} ${name}`
             : name;
 
-        console.log(`Product: "${fullName.substring(0, 40)}..." Price: ${price} URL: ${productUrl.substring(0, 50)}...`);
-
         products.push({
             name: fullName,
             price: price,
-            originalPrice: null,
+            originalPrice: originalPrice,
             imageUrl: imageUrl,
             productUrl: productUrl,
             productId: link.productId,
@@ -327,7 +546,7 @@ function parseProducts(html) {
         });
     }
 
-    console.log(`Final: ${products.length} products`);
+    console.log(`Parsed: ${products.length} products`);
     return products;
 }
 
