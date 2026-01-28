@@ -141,82 +141,60 @@ app.get('/api/search/all', async (req, res) => {
 function parseProducts(html) {
     const products = [];
 
-    // Strategy: Find all info-wrapper-div elements (contain brand + name)
-    // Then look for the next price element after each info wrapper
-    const infoWrapperPositions = [];
-    let searchStart = 0;
-    while (true) {
-        const pos = html.indexOf('info-wrapper', searchStart);
-        if (pos === -1) break;
-        infoWrapperPositions.push(pos);
-        searchStart = pos + 20;
-    }
+    // Use a comprehensive regex to find brand-name sequences followed by prices
+    // This matches the pattern: brand span, then name span, then eventually a price
+    const productPattern = /<span[^>]*class="product-brand"[^>]*>([^<]+)<[\s\S]*?<span[^>]*class="product-name"[^>]*>\s*(?:<!--[^>]*-->)?\s*([^<]+)</g;
 
-    console.log(`Found ${infoWrapperPositions.length} info-wrapper positions`);
+    const productMatches = [...html.matchAll(productPattern)];
+    console.log(`Found ${productMatches.length} brand-name pairs`);
 
-    for (let i = 0; i < infoWrapperPositions.length && products.length < 30; i++) {
-        const startPos = infoWrapperPositions[i];
-        // Look at content from this wrapper to the next (or 3000 chars)
-        const endPos = infoWrapperPositions[i + 1] || startPos + 3000;
-        const blockContent = html.substring(startPos, Math.min(endPos, startPos + 3000));
+    // Extract all prices with their positions
+    const pricePattern = /class="(?:product-price|price-value|price-section)"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/gi;
+    const priceMatches = [...html.matchAll(pricePattern)];
+    const prices = priceMatches.map(m => ({
+        value: parseFloat(m[1].replace(/\./g, '').replace(',', '.')),
+        position: m.index
+    })).filter(p => p.value >= 500 && p.value <= 500000);
 
-        // Extract brand
-        const brandMatch = blockContent.match(/<span[^>]*class="product-brand"[^>]*>([^<]+)/i);
-        const brand = brandMatch ? brandMatch[1].trim() : null;
+    console.log(`Found ${prices.length} valid prices`);
 
-        // Extract product name
-        const nameMatch = blockContent.match(/<span[^>]*class="product-name"[^>]*>\s*(?:<!--[^>]*-->)?\s*([^<]+)/i);
-        const name = nameMatch ? nameMatch[1].trim() : null;
+    // Match each brand-name with the closest price that comes AFTER it
+    for (const productMatch of productMatches) {
+        if (products.length >= 30) break;
 
-        // Skip if no name found
-        if (!name) continue;
+        const brand = productMatch[1].trim();
+        const name = productMatch[2].trim();
+        const matchPosition = productMatch.index;
 
-        // Extract price - look for any price pattern in this block or shortly after
-        let price = null;
-        const pricePatterns = [
-            /class="product-price"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            /class="price-value"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            /class="price-section"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            /class="discounted-price"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            />([0-9]{1,3}\.[0-9]{3}(?:\.[0-9]{3})?(?:,[0-9]{2})?)\s*TL</i
-        ];
+        // Find the first price that comes after this product in the HTML
+        const matchingPrice = prices.find(p => p.position > matchPosition && p.position < matchPosition + 3000);
 
-        // Also look in a wider range for the price
-        const priceSearchContent = html.substring(startPos, Math.min(startPos + 4000, html.length));
+        if (matchingPrice) {
+            // Get URL and image from context around the product
+            const contextStart = Math.max(0, matchPosition - 300);
+            const context = html.substring(contextStart, matchPosition + 1500);
 
-        for (const pattern of pricePatterns) {
-            const priceMatch = priceSearchContent.match(pattern);
-            if (priceMatch) {
-                let priceStr = priceMatch[1].replace(/\./g, '').replace(',', '.');
-                price = parseFloat(priceStr);
-                if (price >= 100 && price <= 500000) {
-                    break;
-                }
-                price = null;
-            }
+            const urlMatch = context.match(/href="([^"]*-p-[0-9]+[^"]*)"/i);
+            const productUrl = urlMatch ? 'https://www.trendyol.com' + urlMatch[1] : null;
+
+            const imgMatch = context.match(/(?:data-src|src)="(https:\/\/cdn\.dsmcdn\.com[^"]*\/prod[^"]*\.jpg)"/i);
+            const imageUrl = imgMatch ? imgMatch[1] : null;
+
+            products.push({
+                name: `${brand} ${name}`,
+                price: matchingPrice.value,
+                originalPrice: null,
+                imageUrl: imageUrl,
+                productUrl: productUrl,
+                brand: brand,
+                seller: null,
+                store: 'Trendyol'
+            });
+
+            // Remove used price to prevent double-matching
+            const priceIdx = prices.indexOf(matchingPrice);
+            if (priceIdx > -1) prices.splice(priceIdx, 1);
         }
-
-        if (!price) continue;
-
-        // Extract product URL - look before the info-wrapper (in the parent card)
-        const cardContext = html.substring(Math.max(0, startPos - 500), startPos + 500);
-        const urlMatch = cardContext.match(/href="([^"]*-p-[0-9]+[^"]*)"/i);
-        const productUrl = urlMatch ? 'https://www.trendyol.com' + urlMatch[1] : null;
-
-        // Extract image URL
-        const imgMatch = cardContext.match(/(?:data-src|src)="(https:\/\/cdn\.dsmcdn\.com[^"]*\/prod[^"]*\.jpg)"/i);
-        const imageUrl = imgMatch ? imgMatch[1].replace(/\\u002F/g, '/') : null;
-
-        products.push({
-            name: brand ? `${brand} ${name}` : name,
-            price: price,
-            originalPrice: null,
-            imageUrl: imageUrl,
-            productUrl: productUrl,
-            brand: brand,
-            seller: null,
-            store: 'Trendyol'
-        });
     }
 
     console.log(`Final: ${products.length} products`);
