@@ -25,20 +25,36 @@ app.get('/api/debug/html', async (req, res) => {
         const response = await fetch(apiUrl);
         const html = await response.text();
 
-        // Find JSON-like structures in HTML
-        const scriptMatches = html.match(/<script[^>]*>([^<]*(?:product|price|fiyat)[^<]*)<\/script>/gi) || [];
-        const windowMatches = html.match(/window\["[^"]+"\]\s*=\s*\{[^}]+\}/g) || [];
-        const jsonMatches = html.match(/\{[^{}]*"(?:id|name|price)"[^{}]*\}/g) || [];
+        // Find all window["__*__PROPS"] patterns and their keys
+        const windowPropsRegex = /window\["(__[^"]+__)"\]\s*=\s*(\{[\s\S]*?\});?\s*(?=<\/script>|window\[)/g;
+        const allWindowProps = [];
+        let match;
+        while ((match = windowPropsRegex.exec(html)) !== null) {
+            allWindowProps.push({
+                key: match[1],
+                valuePreview: match[2].substring(0, 300)
+            });
+        }
+
+        // Look for product-related JSON structures
+        const productDataMatch = html.match(/window\["__search-app-products-container__PROPS"\]\s*=\s*(\{[\s\S]*?\});?\s*<\/script>/);
+        const searchResultMatch = html.match(/window\["__single-search-result__PROPS"\]\s*=\s*(\{[\s\S]*?\});?\s*<\/script>/);
+
+        // Find any JSON that contains sellingPrice or product arrays
+        const sellingPriceMatch = html.match(/"sellingPrice"\s*:\s*[\d.]+/g) || [];
+        const productNameMatch = html.match(/"name"\s*:\s*"[^"]{10,100}"/g) || [];
 
         res.json({
             htmlLength: html.length,
-            hasProductWord: html.includes('product'),
-            hasPriceWord: html.includes('price'),
-            hasFiyatWord: html.includes('fiyat'),
-            scriptSnippets: scriptMatches.slice(0, 3).map(s => s.substring(0, 500)),
-            windowObjects: windowMatches.slice(0, 5),
-            jsonSnippets: jsonMatches.slice(0, 10),
-            htmlSample: html.substring(0, 5000)
+            windowPropsKeys: allWindowProps.map(p => p.key),
+            windowPropsCount: allWindowProps.length,
+            allWindowProps: allWindowProps.slice(0, 20),
+            hasSearchProducts: !!productDataMatch,
+            hasSearchResult: !!searchResultMatch,
+            sellingPriceCount: sellingPriceMatch.length,
+            sellingPriceSamples: sellingPriceMatch.slice(0, 5),
+            productNameSamples: productNameMatch.slice(0, 5),
+            htmlSample: html.substring(html.indexOf('window["__') || 0, (html.indexOf('window["__') || 0) + 5000)
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
