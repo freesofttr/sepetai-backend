@@ -1,11 +1,12 @@
 const express = require('express');
 const cors = require('cors');
+const ScraperAPIClient = require('scraperapi-sdk');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ScraperAPI configuration
-const SCRAPER_API_KEY = '27c0df8063c38ebc97100e825ff4cd1c';
+// ScraperAPI SDK client
+const client = new ScraperAPIClient('27c0df8063c38ebc97100e825ff4cd1c');
 
 app.use(cors());
 app.use(express.json());
@@ -14,20 +15,6 @@ app.get('/', (req, res) => {
     res.json({ status: 'ok', message: 'SepetAI Backend' });
 });
 
-// Premium ScraperAPI fetch with residential proxies
-async function fetchPage(url) {
-    const fetch = (await import('node-fetch')).default;
-
-    const apiUrl = `http://api.scraperapi.com?api_key=${SCRAPER_API_KEY}&url=${encodeURIComponent(url)}&render=true&country_code=tr&premium=true&device_type=desktop`;
-
-    console.log(`Fetching: ${url}`);
-    const response = await fetch(apiUrl, { timeout: 90000 });
-
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return response.text();
-}
-
-// Search endpoint
 app.get('/api/search/all', async (req, res) => {
     const { q } = req.query;
     if (!q) return res.status(400).json({ error: 'Query required' });
@@ -35,12 +22,14 @@ app.get('/api/search/all', async (req, res) => {
     console.log(`Searching: ${q}`);
 
     try {
-        // Trendyol scrape
-        const html = await fetchPage(`https://www.trendyol.com/sr?q=${encodeURIComponent(q)}`);
+        const url = `https://www.trendyol.com/sr?q=${encodeURIComponent(q)}`;
+
+        // Use SDK with render and premium
+        const html = await client.get(url, { render: true, country_code: 'tr' });
+
         console.log(`Got ${html.length} bytes`);
 
-        // Parse products from embedded JSON
-        const products = parseProducts(html, q);
+        const products = parseProducts(html);
         console.log(`Found ${products.length} products`);
 
         res.json({ query: q, count: products.length, products });
@@ -50,10 +39,10 @@ app.get('/api/search/all', async (req, res) => {
     }
 });
 
-function parseProducts(html, query) {
+function parseProducts(html) {
     const products = [];
 
-    // Try embedded JSON first
+    // Try embedded JSON
     const match = html.match(/__SEARCH_APP_INITIAL_STATE__\s*=\s*(\{[\s\S]*?\});/);
     if (match) {
         try {
@@ -79,7 +68,7 @@ function parseProducts(html, query) {
         }
     }
 
-    // Fallback: regex parse
+    // Fallback regex
     if (products.length === 0) {
         const names = [...html.matchAll(/prdct-desc-cntnr-name[^>]*>([^<]+)</g)];
         const prices = [...html.matchAll(/prc-box-(?:dscntd|sllng)[^>]*>([^<]+)</g)];
