@@ -418,12 +418,13 @@ const PRODUCT_CATEGORIES = {
 
 // Accessory patterns - items that are almost always accessories
 const ACCESSORY_PATTERNS = [
-    'kılıf', 'kilif', 'cam', 'ekran koruyucu', 'koruyucu', 'şarj', 'sarj',
+    'kılıf', 'kilif', 'kapak', 'cam', 'ekran koruyucu', 'koruyucu', 'şarj', 'sarj',
     'adaptör', 'adaptor', 'kablo', 'kordon', 'kayış', 'kayis', 'powerbank',
     'tutucu', 'stand', 'dock', 'temizleyici', 'sticker', 'çıkartma', 'cikartma',
     'aksesuar', 'yedek', 'bağcık', 'bagcik', 'tabanlık', 'tabanlik',
     'bakım', 'bakim', 'fırça', 'firca', 'sprey', 'aparatı', 'aparati',
-    'askı', 'aski', 'kumanda', 'mouse pad', 'mousepad', 'jelatin', 'film'
+    'askı', 'aski', 'kumanda', 'mouse pad', 'mousepad', 'jelatin', 'film',
+    'broş', 'bros'
 ];
 
 // Turkish character normalization for matching
