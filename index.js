@@ -225,23 +225,34 @@ function parseProducts(html) {
 
         for (let i = 0; i < infoWrapperPositions.length && products.length < 30; i++) {
             const startPos = infoWrapperPositions[i];
-            const endPos = infoWrapperPositions[i + 1] || startPos + 3000;
-            const block = html.substring(startPos, Math.min(endPos, startPos + 3000));
+            // Look at larger block because price is outside info-wrapper
+            const endPos = infoWrapperPositions[i + 1] || startPos + 5000;
+            const block = html.substring(startPos, Math.min(endPos, startPos + 5000));
 
             // Extract brand - text before any < inside product-brand span
             const brandMatch = block.match(/class="product-brand"[^>]*>([^<]+)/i);
             const brand = brandMatch ? brandMatch[1].trim() : null;
 
             // Extract product name - handle <!-- --> comment
-            // Pattern: class="product-name"...> <!-- -->Actual Name
             const nameMatch = block.match(/class="product-name"[^>]*>(?:\s*<!--[\s\S]*?-->)?\s*([^<]+)/i);
             const name = nameMatch ? nameMatch[1].trim() : null;
 
-            // Extract price from price-section or sale-price
-            const priceMatch = block.match(/class="(?:price-section|sale-price)"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i);
+            // Extract price - try multiple patterns, price is often outside info-wrapper
             let price = null;
-            if (priceMatch) {
-                price = parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.'));
+            const pricePatterns = [
+                /class="price-section"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+                /class="sale-price"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+                /class="discounted-price"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+                />([0-9]{2,3}\.[0-9]{3}(?:\.[0-9]{3})?)\s*TL</i  // Match 47.999 TL or 147.999 TL
+            ];
+
+            for (const pattern of pricePatterns) {
+                const priceMatch = block.match(pattern);
+                if (priceMatch) {
+                    price = parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.'));
+                    if (price >= 1000 && price <= 500000) break;
+                    price = null;
+                }
             }
 
             // Extract product URL from surrounding context
@@ -254,7 +265,7 @@ function parseProducts(html) {
             const imgMatch = context.match(/(?:data-src|src)="(https:\/\/cdn\.dsmcdn\.com[^"]*\/prod[^"]*\.jpg)"/i);
             const imageUrl = imgMatch ? imgMatch[1] : null;
 
-            if (name && price && price >= 100 && price <= 500000) {
+            if (name && price) {
                 // Check if we already have this product
                 const exists = products.some(p => p.name.includes(name.substring(0, 20)));
                 if (!exists) {
