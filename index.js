@@ -95,6 +95,12 @@ app.get('/api/debug/html', async (req, res) => {
         const infoWrapperIdx = html.indexOf('class="info-wrapper"');
         const infoWrapperSample = infoWrapperIdx > -1 ? html.substring(infoWrapperIdx, infoWrapperIdx + 2000) : null;
 
+        // Find context BEFORE info-wrapper to see where href is
+        const infoWrapperContext = infoWrapperIdx > -1 ? html.substring(Math.max(0, infoWrapperIdx - 2000), infoWrapperIdx + 500) : null;
+
+        // Find all href patterns with product IDs
+        const productHrefMatches = html.match(/href="[^"]*-p-[0-9]+[^"]*"/gi) || [];
+
         res.json({
             hasJsonData: !!jsonDataMatch,
             hasSearchState: !!searchStateMatch,
@@ -114,7 +120,10 @@ app.get('/api/debug/html', async (req, res) => {
             htmlContainsSearch: html.toLowerCase().includes('search'),
             hasNextData: !!stateScriptMatch,
             hasNuxtData: !!nuxtDataMatch,
-            hasProductInScripts
+            hasProductInScripts,
+            infoWrapperContext,
+            productHrefCount: productHrefMatches.length,
+            productHrefSamples: productHrefMatches.slice(0, 5)
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
