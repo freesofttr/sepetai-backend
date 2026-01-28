@@ -10,7 +10,7 @@ app.use(express.json());
 
 // In-memory cache with stale-while-revalidate
 const cache = new Map();
-const CACHE_TTL = 30 * 60 * 1000; // 30 minutes - serve fresh
+const CACHE_TTL = 15 * 60 * 1000; // 15 minutes - serve fresh
 const CACHE_STALE_TTL = 2 * 60 * 60 * 1000; // 2 hours - serve stale while revalidating
 
 function getCached(key) {
@@ -75,6 +75,7 @@ async function fetchAndCacheSearch(query) {
         totalScraped: filtered.totalScraped,
         filteredCount: filtered.filteredCount,
         removedCount: filtered.removedCount,
+        lastFetched: Date.now(),
         products: filtered.products
     };
 
