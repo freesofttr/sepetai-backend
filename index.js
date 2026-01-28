@@ -34,7 +34,8 @@ function setCache(key, data) {
 }
 
 // Pre-cache popular searches on startup
-const POPULAR_SEARCHES = ['iphone', 'samsung', 'laptop', 'kulaklık', 'ayakkabı', 'parfüm'];
+// Reduced list - each search hits 3 stores now (3x API credits)
+const POPULAR_SEARCHES = ['iphone', 'samsung', 'laptop'];
 
 async function preCachePopularSearches() {
     console.log('Pre-caching popular searches...');
@@ -44,8 +45,8 @@ async function preCachePopularSearches() {
             if (!cache.has(cacheKey)) {
                 console.log(`Pre-caching: ${query}`);
                 await fetchAndCacheSearch(query);
-                // Wait 2 seconds between requests to avoid rate limiting
-                await new Promise(resolve => setTimeout(resolve, 2000));
+                // Wait 5 seconds between searches (3 concurrent store requests each)
+                await new Promise(resolve => setTimeout(resolve, 5000));
             }
         } catch (e) {
             console.error(`Failed to pre-cache ${query}:`, e.message);
@@ -101,22 +102,20 @@ async function scrapeStore(query, store) {
 }
 
 async function fetchAndCacheSearch(query) {
-    // Scrape all stores in parallel
-    const [trendyolProducts, hepsiburadaProducts, n11Products, amazonProducts] = await Promise.all([
+    // Scrape all stores in parallel (N11 disabled - returns empty HTML via ScraperAPI)
+    const [trendyolProducts, hepsiburadaProducts, amazonProducts] = await Promise.all([
         scrapeStore(query, 'trendyol'),
         scrapeStore(query, 'hepsiburada'),
-        scrapeStore(query, 'n11'),
         scrapeStore(query, 'amazon')
     ]);
 
     const allProducts = [
         ...trendyolProducts,
         ...hepsiburadaProducts,
-        ...n11Products,
         ...amazonProducts
     ];
 
-    console.log(`Total scraped from all stores: ${allProducts.length} (T:${trendyolProducts.length} H:${hepsiburadaProducts.length} N:${n11Products.length} A:${amazonProducts.length})`);
+    console.log(`Total scraped from all stores: ${allProducts.length} (T:${trendyolProducts.length} H:${hepsiburadaProducts.length} A:${amazonProducts.length})`);
 
     // Apply smart filtering
     const filtered = smartFilterProducts(query, allProducts);
