@@ -1,7 +1,7 @@
 {
   "name": "sepetai-backend",
   "version": "1.0.0",
-  "description": "Backend API for SepetAI - Turkish e-commerce price comparison",
+  "description": "Backend API for SepetAI - Turkish e-commerce price comparison with ScraperAPI",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -9,7 +9,6 @@
   },
   "dependencies": {
     "express": "^4.18.2",
-    "playwright": "1.48.0",
     "cors": "^2.8.5",
     "node-fetch": "^3.3.2"
   },
