@@ -188,68 +188,95 @@ app.get('/api/search/all', async (req, res) => {
 function parseProducts(html) {
     const products = [];
 
-    // Parse seller-store product cards - they have a clean structure:
-    // <a class="seller-store-product-card" href="/url-p-123">
-    //   <img class="product-image" src="https://cdn...">
-    //   <p class="product-name"><strong class="product-brand">Brand</strong>Name</p>
-    //   <span class="product-price">16.999 TL</span>
-    // </a>
+    // New approach: Find all product links first, then extract info
+    // Product links have pattern: href="/brand/product-name-p-123456?..."
+    const productLinkRegex = /href="(\/[^"]*-p-([0-9]+)[^"]*)"/gi;
+    const productLinks = [];
+    let linkMatch;
 
-    // Split by seller-store-product-card
-    const cardMarker = 'class="seller-store-product-card"';
-    const parts = html.split(cardMarker);
-    console.log(`Found ${parts.length - 1} seller-store cards`);
+    while ((linkMatch = productLinkRegex.exec(html)) !== null) {
+        productLinks.push({
+            href: linkMatch[1],
+            productId: linkMatch[2],
+            position: linkMatch.index
+        });
+    }
 
-    for (let i = 1; i < parts.length && products.length < 30; i++) {
-        const cardContent = parts[i].substring(0, 2000);  // Each card content
+    console.log(`Found ${productLinks.length} product links`);
 
-        // Get the href - it can be right after class attribute or in preceding content
-        let productUrl = null;
+    // Process each product link
+    for (let i = 0; i < productLinks.length && products.length < 30; i++) {
+        const link = productLinks[i];
 
-        // Pattern 1: href comes right after the split point (class="seller-store-product-card" href="...")
-        const hrefAfterMatch = cardContent.match(/^\s*href="([^"]*-p-[0-9]+[^"]*)"/);
-        if (hrefAfterMatch) {
-            productUrl = 'https://www.trendyol.com' + hrefAfterMatch[1];
-        } else {
-            // Pattern 2: href comes before class attribute (href="..." class="seller-store-product-card")
-            const precedingContent = parts[i - 1].slice(-500);
-            const hrefBeforeMatch = precedingContent.match(/href="([^"]*-p-[0-9]+[^"]*)"/);
-            if (hrefBeforeMatch) {
-                productUrl = 'https://www.trendyol.com' + hrefBeforeMatch[1];
-            }
-        }
+        // Skip if we already have this product ID
+        if (products.some(p => p.productId === link.productId)) continue;
 
-        // Extract brand from <strong class="product-brand">
+        // Get content after this link (the product card content)
+        const contentStart = link.position;
+        const contentEnd = productLinks[i + 1]?.position || contentStart + 5000;
+        const cardContent = html.substring(contentStart, Math.min(contentEnd, contentStart + 5000));
+
+        // Extract brand from product-brand span
         const brandMatch = cardContent.match(/class="product-brand"[^>]*>([^<]+)/i);
         const brand = brandMatch ? brandMatch[1].trim() : null;
 
-        // Extract full product name (brand is usually followed by the name)
-        // Pattern: <p class="product-name"...><strong...>Brand</strong>Name</p>
-        const nameMatch = cardContent.match(/class="product-name"[^>]*>(?:<strong[^>]*>[^<]*<\/strong>)?([^<]+)/i);
-        const name = nameMatch ? nameMatch[1].trim() : null;
+        // Extract product name - handle <!-- --> comment
+        const nameMatch = cardContent.match(/class="product-name"[^>]*>(?:\s*<!--[\s\S]*?-->)?\s*([^<]+)/i);
+        let name = nameMatch ? nameMatch[1].trim() : null;
 
-        // Extract price from <span class="product-price">
-        const priceMatch = cardContent.match(/class="product-price"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i);
+        // If no name found, try to extract from href
+        if (!name && link.href) {
+            // href format: /brand/product-name-here-p-123
+            const hrefParts = link.href.split('/');
+            if (hrefParts.length >= 3) {
+                const productSlug = hrefParts[2].split('-p-')[0];
+                name = productSlug.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+            }
+        }
+
+        // Extract price - try multiple patterns
         let price = null;
-        if (priceMatch) {
-            price = parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.'));
+        const pricePatterns = [
+            /class="price-section"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="single-price"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="sale-price"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="discounted-price"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            />([0-9]{2,3}\.[0-9]{3}(?:\.[0-9]{3})?)\s*TL</i,  // Match 47.999 TL
+            />([0-9]+\.[0-9]{3})\s*TL/i  // Simpler pattern
+        ];
+
+        for (const pattern of pricePatterns) {
+            const priceMatch = cardContent.match(pattern);
+            if (priceMatch) {
+                price = parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.'));
+                if (price >= 100 && price <= 500000) break;
+                price = null;
+            }
         }
 
         // Extract image URL
-        const imgMatch = cardContent.match(/class="product-image"[^>]*src="([^"]+)"/i);
-        const imageUrl = imgMatch ? imgMatch[1] : null;
+        const imgPatterns = [
+            /src="(https:\/\/cdn\.dsmcdn\.com[^"]*\.(?:jpg|png|webp))"/i,
+            /data-src="(https:\/\/cdn\.dsmcdn\.com[^"]*\.(?:jpg|png|webp))"/i
+        ];
+        let imageUrl = null;
+        for (const pattern of imgPatterns) {
+            const imgMatch = cardContent.match(pattern);
+            if (imgMatch) {
+                imageUrl = imgMatch[1];
+                break;
+            }
+        }
 
         // Skip if we don't have essential data
-        if (!price || price < 100) continue;
+        if (!name || !price || price < 100) continue;
 
-        const fullName = brand && name ? `${brand} ${name}` : (name || 'Unknown Product');
+        const productUrl = 'https://www.trendyol.com' + link.href.replace(/&amp;/g, '&');
+        const fullName = brand && !name.toLowerCase().startsWith(brand.toLowerCase())
+            ? `${brand} ${name}`
+            : name;
 
-        // Log URL extraction status
-        if (productUrl) {
-            console.log(`Product "${fullName.substring(0, 30)}..." has URL: ${productUrl.substring(0, 60)}...`);
-        } else {
-            console.log(`Warning: No URL found for product "${fullName.substring(0, 30)}..."`);
-        }
+        console.log(`Product: "${fullName.substring(0, 40)}..." Price: ${price} URL: ${productUrl.substring(0, 50)}...`);
 
         products.push({
             name: fullName,
@@ -257,87 +284,11 @@ function parseProducts(html) {
             originalPrice: null,
             imageUrl: imageUrl,
             productUrl: productUrl,
+            productId: link.productId,
             brand: brand,
             seller: null,
             store: 'Trendyol'
         });
-    }
-
-    // Also try to parse regular product cards if we don't have enough products
-    if (products.length < 10) {
-        console.log(`Only ${products.length} from seller cards, trying regular cards...`);
-
-        // Find all info-wrapper positions for regular product cards
-        const infoWrapperPositions = [];
-        let searchPos = 0;
-        while (true) {
-            const pos = html.indexOf('class="info-wrapper"', searchPos);
-            if (pos === -1) break;
-            infoWrapperPositions.push(pos);
-            searchPos = pos + 20;
-        }
-
-        console.log(`Found ${infoWrapperPositions.length} info-wrapper elements`);
-
-        for (let i = 0; i < infoWrapperPositions.length && products.length < 30; i++) {
-            const startPos = infoWrapperPositions[i];
-            // Look at larger block because price is outside info-wrapper
-            const endPos = infoWrapperPositions[i + 1] || startPos + 5000;
-            const block = html.substring(startPos, Math.min(endPos, startPos + 5000));
-
-            // Extract brand - text before any < inside product-brand span
-            const brandMatch = block.match(/class="product-brand"[^>]*>([^<]+)/i);
-            const brand = brandMatch ? brandMatch[1].trim() : null;
-
-            // Extract product name - handle <!-- --> comment
-            const nameMatch = block.match(/class="product-name"[^>]*>(?:\s*<!--[\s\S]*?-->)?\s*([^<]+)/i);
-            const name = nameMatch ? nameMatch[1].trim() : null;
-
-            // Extract price - try multiple patterns, price is often outside info-wrapper
-            let price = null;
-            const pricePatterns = [
-                /class="price-section"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-                /class="sale-price"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-                /class="discounted-price"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-                />([0-9]{2,3}\.[0-9]{3}(?:\.[0-9]{3})?)\s*TL</i  // Match 47.999 TL or 147.999 TL
-            ];
-
-            for (const pattern of pricePatterns) {
-                const priceMatch = block.match(pattern);
-                if (priceMatch) {
-                    price = parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.'));
-                    if (price >= 100 && price <= 500000) break;
-                    price = null;
-                }
-            }
-
-            // Extract product URL from surrounding context - search wider area
-            const contextStart = Math.max(0, startPos - 1000);
-            const context = html.substring(contextStart, startPos + 1000);
-            const urlMatch = context.match(/href="([^"]*-p-[0-9]+[^"]*)"/i);
-            const productUrl = urlMatch ? 'https://www.trendyol.com' + urlMatch[1] : null;
-
-            // Extract image URL
-            const imgMatch = context.match(/(?:data-src|src)="(https:\/\/cdn\.dsmcdn\.com[^"]*\/prod[^"]*\.jpg)"/i);
-            const imageUrl = imgMatch ? imgMatch[1] : null;
-
-            if (name && price) {
-                // Check if we already have this product
-                const exists = products.some(p => p.name.includes(name.substring(0, 20)));
-                if (!exists) {
-                    products.push({
-                        name: brand ? `${brand} ${name}` : name,
-                        price: price,
-                        originalPrice: null,
-                        imageUrl: imageUrl,
-                        productUrl: productUrl,
-                        brand: brand,
-                        seller: null,
-                        store: 'Trendyol'
-                    });
-                }
-            }
-        }
     }
 
     console.log(`Final: ${products.length} products`);
