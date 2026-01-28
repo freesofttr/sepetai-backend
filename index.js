@@ -87,7 +87,6 @@ app.get('/api/debug/html', async (req, res) => {
             priceBoxSamples: priceBoxMatches.slice(0, 10),
             prcWrapperSamples: priceWrapperMatches.slice(0, 10),
             sellingPriceSamples: sellingMatches.slice(0, 3),
-            productCardSample: productCardSample ? productCardSample[0].substring(0, 2000) : null,
             htmlContainsProduct: html.toLowerCase().includes('product'),
             htmlContainsSearch: html.toLowerCase().includes('search'),
             hasNextData: !!stateScriptMatch,
