@@ -24,15 +24,27 @@ app.get('/api/search/all', async (req, res) => {
         const targetUrl = `https://www.trendyol.com/sr?q=${encodeURIComponent(q)}`;
         const apiUrl = `https://api.scraperapi.com/?api_key=${API_KEY}&url=${encodeURIComponent(targetUrl)}&render=true&country_code=tr`;
 
-        console.log('Fetching from ScraperAPI...');
         const response = await fetch(apiUrl);
-
         if (!response.ok) {
             return res.status(500).json({ error: `ScraperAPI: ${response.status}` });
         }
 
         const html = await response.text();
         console.log(`Got ${html.length} bytes`);
+
+        // Debug: what price-related patterns exist?
+        const hasSellingPrice = html.includes('sellingPrice');
+        const hasDiscountedPrice = html.includes('discountedPrice');
+        const hasOriginalPrice = html.includes('originalPrice');
+        const hasPriceValue = html.includes('"price":');
+        const hasFiyat = html.includes('fiyat');
+        console.log(`Price patterns: selling=${hasSellingPrice}, discounted=${hasDiscountedPrice}, original=${hasOriginalPrice}, price=${hasPriceValue}, fiyat=${hasFiyat}`);
+
+        // Log a section that might contain product data
+        const priceSection = html.match(/.{0,200}price.{0,200}/i);
+        if (priceSection) {
+            console.log('Price context:', priceSection[0].substring(0, 300));
+        }
 
         const products = parseProducts(html);
         console.log(`Found ${products.length} products`);
@@ -47,103 +59,67 @@ app.get('/api/search/all', async (req, res) => {
 function parseProducts(html) {
     const products = [];
 
-    // Method 1: Look for window["__*PROPS"] patterns (new Trendyol format)
-    const propsMatches = html.matchAll(/window\["([^"]+)"\]\s*=\s*(\{[^}]+\}|\[[^\]]+\]|"[^"]*")/g);
-    for (const match of propsMatches) {
-        const key = match[1];
-        const value = match[2];
-        console.log(`Found window prop: ${key}`);
+    // Try multiple price patterns
+    const pricePatterns = [
+        /"sellingPrice"\s*:\s*(\d+(?:\.\d+)?)/g,
+        /"discountedPrice"\s*:\s*(\d+(?:\.\d+)?)/g,
+        /"salePrice"\s*:\s*(\d+(?:\.\d+)?)/g,
+        /"price"\s*:\s*(\d+(?:\.\d+)?)/g,
+        /"value"\s*:\s*(\d+(?:\.\d+)?)/g,
+    ];
 
-        if (key.includes('product') || key.includes('search') || key.includes('listing')) {
-            try {
-                const data = JSON.parse(value);
-                console.log(`Parsed ${key}:`, typeof data);
-            } catch (e) {
-                // Continue
+    let allPrices = [];
+    for (const pattern of pricePatterns) {
+        const matches = [...html.matchAll(pattern)];
+        if (matches.length > 0) {
+            console.log(`Found ${matches.length} prices with pattern ${pattern.source}`);
+            // Filter reasonable prices (10 TL - 500000 TL)
+            const validPrices = matches.map(m => parseFloat(m[1])).filter(p => p >= 10 && p <= 500000);
+            if (validPrices.length > allPrices.length) {
+                allPrices = validPrices;
             }
         }
     }
 
-    // Method 2: Look for script tags with JSON data
-    const scriptMatches = html.matchAll(/<script[^>]*>([^<]*(?:"products"|"items"|"results")[^<]*)<\/script>/gi);
-    for (const match of scriptMatches) {
-        const content = match[1];
-        // Try to find JSON objects with product data
-        const jsonMatch = content.match(/\{[^{}]*"(?:products|items)":\s*\[[\s\S]*?\]\s*[^{}]*\}/);
-        if (jsonMatch) {
-            try {
-                const data = JSON.parse(jsonMatch[0]);
-                const items = data.products || data.items || [];
-                console.log(`Found ${items.length} products in script tag`);
-                if (items.length > 0) {
-                    items.slice(0, 20).forEach(p => {
-                        products.push({
-                            name: p.name || p.title || '',
-                            price: p.price?.sellingPrice || p.price?.discountedPrice || p.price || p.sellingPrice || 0,
-                            originalPrice: null,
-                            imageUrl: p.images?.[0] || p.imageUrl || p.image || null,
-                            productUrl: p.url ? `https://www.trendyol.com${p.url}` : null,
-                            brand: p.brand?.name || p.brand || null,
-                            seller: p.merchantName || p.seller || null,
-                            store: 'Trendyol'
-                        });
-                    });
-                    if (products.length > 0) return products;
-                }
-            } catch (e) {
-                // Continue
+    // Try multiple name patterns
+    const namePatterns = [
+        /"name"\s*:\s*"([^"]{10,200})"/g,
+        /"title"\s*:\s*"([^"]{10,200})"/g,
+        /"productName"\s*:\s*"([^"]{10,200})"/g,
+    ];
+
+    let allNames = [];
+    for (const pattern of namePatterns) {
+        const matches = [...html.matchAll(pattern)];
+        if (matches.length > 0) {
+            console.log(`Found ${matches.length} names with pattern ${pattern.source}`);
+            // Filter for product-like names (not URLs, not short strings)
+            const validNames = matches.map(m => m[1]).filter(n =>
+                !n.includes('http') &&
+                !n.includes('\\u') &&
+                n.length > 10 &&
+                /[a-zA-ZğüşıöçĞÜŞİÖÇ]/.test(n)
+            );
+            if (validNames.length > allNames.length) {
+                allNames = validNames;
             }
         }
     }
 
-    // Method 3: Extract product data from any JSON in page
-    // Look for patterns like {"id":123,"name":"...",price":...}
-    const productPatterns = html.matchAll(/\{"id":\d+[^}]*"name":"([^"]+)"[^}]*"price":\{[^}]*"sellingPrice":(\d+(?:\.\d+)?)[^}]*\}/g);
-    for (const match of productPatterns) {
-        const name = match[1];
-        const price = parseFloat(match[2]);
-        if (name && price > 0 && products.length < 20) {
-            products.push({
-                name: name,
-                price: price,
-                originalPrice: null,
-                imageUrl: null,
-                productUrl: null,
-                brand: null,
-                seller: null,
-                store: 'Trendyol'
-            });
-        }
-    }
+    console.log(`Final: ${allNames.length} names, ${allPrices.length} prices`);
 
-    if (products.length > 0) {
-        console.log(`Method 3 found ${products.length} products`);
-        return products;
-    }
-
-    // Method 4: Try to find any "name" and "sellingPrice" pairs
-    const nameMatches = [...html.matchAll(/"name"\s*:\s*"([^"]+)"/g)];
-    const priceMatches = [...html.matchAll(/"sellingPrice"\s*:\s*(\d+(?:\.\d+)?)/g)];
-
-    console.log(`Method 4: found ${nameMatches.length} names, ${priceMatches.length} prices`);
-
-    // Filter for product names (usually longer than 10 chars)
-    const productNames = nameMatches.filter(m => m[1].length > 10 && !m[1].includes('http'));
-
-    for (let i = 0; i < Math.min(productNames.length, priceMatches.length, 20); i++) {
-        const price = parseFloat(priceMatches[i][1]);
-        if (price > 0) {
-            products.push({
-                name: productNames[i][1],
-                price: price,
-                originalPrice: null,
-                imageUrl: null,
-                productUrl: null,
-                brand: null,
-                seller: null,
-                store: 'Trendyol'
-            });
-        }
+    // Match names with prices
+    for (let i = 0; i < Math.min(allNames.length, allPrices.length, 20); i++) {
+        products.push({
+            name: allNames[i],
+            price: allPrices[i],
+            originalPrice: null,
+            imageUrl: null,
+            productUrl: null,
+            brand: null,
+            seller: null,
+            store: 'Trendyol'
+        });
     }
 
     return products;
