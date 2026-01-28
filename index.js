@@ -8,22 +8,66 @@ const API_KEY = '27c0df8063c38ebc97100e825ff4cd1c';
 app.use(cors());
 app.use(express.json());
 
-// Simple in-memory cache (5 minute TTL)
+// In-memory cache with stale-while-revalidate
 const cache = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL = 30 * 60 * 1000; // 30 minutes - serve fresh
+const CACHE_STALE_TTL = 2 * 60 * 60 * 1000; // 2 hours - serve stale while revalidating
 
 function getCached(key) {
     const item = cache.get(key);
-    if (!item) return null;
-    if (Date.now() - item.timestamp > CACHE_TTL) {
+    if (!item) return { data: null, isStale: false };
+
+    const age = Date.now() - item.timestamp;
+    if (age > CACHE_STALE_TTL) {
         cache.delete(key);
-        return null;
+        return { data: null, isStale: false };
     }
-    return item.data;
+
+    return {
+        data: item.data,
+        isStale: age > CACHE_TTL
+    };
 }
 
 function setCache(key, data) {
     cache.set(key, { data, timestamp: Date.now() });
+}
+
+// Pre-cache popular searches on startup
+const POPULAR_SEARCHES = ['iphone', 'samsung', 'laptop', 'kulaklık', 'ayakkabı', 'parfüm'];
+
+async function preCachePopularSearches() {
+    console.log('Pre-caching popular searches...');
+    for (const query of POPULAR_SEARCHES) {
+        try {
+            const cacheKey = `search:${query.toLowerCase()}`;
+            if (!cache.has(cacheKey)) {
+                console.log(`Pre-caching: ${query}`);
+                await fetchAndCacheSearch(query);
+                // Wait 2 seconds between requests to avoid rate limiting
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+        } catch (e) {
+            console.error(`Failed to pre-cache ${query}:`, e.message);
+        }
+    }
+    console.log('Pre-caching complete');
+}
+
+async function fetchAndCacheSearch(query) {
+    const fetch = (await import('node-fetch')).default;
+    const targetUrl = `https://www.trendyol.com/sr?q=${encodeURIComponent(query)}`;
+    const apiUrl = `https://api.scraperapi.com/?api_key=${API_KEY}&url=${encodeURIComponent(targetUrl)}&country_code=tr`;
+
+    const response = await fetch(apiUrl);
+    if (!response.ok) throw new Error(`ScraperAPI: ${response.status}`);
+
+    const html = await response.text();
+    const products = parseProducts(html);
+    const result = { query, count: products.length, products };
+
+    setCache(`search:${query.toLowerCase()}`, result);
+    return result;
 }
 
 app.get('/', (req, res) => {
@@ -136,48 +180,24 @@ app.get('/api/search/all', async (req, res) => {
 
     // Check cache first
     const cacheKey = `search:${q.toLowerCase()}`;
-    const cached = getCached(cacheKey);
+    const { data: cached, isStale } = getCached(cacheKey);
+
     if (cached) {
-        console.log(`Cache hit for: ${q}`);
+        console.log(`Cache ${isStale ? 'STALE' : 'HIT'} for: ${q}`);
+
+        // If stale, return cached data immediately but refresh in background
+        if (isStale) {
+            // Don't await - let it run in background
+            fetchAndCacheSearch(q).catch(e => console.error('Background refresh failed:', e.message));
+        }
+
         return res.json(cached);
     }
 
-    console.log(`Searching: ${q}`);
+    console.log(`Cache MISS - Searching: ${q}`);
 
     try {
-        const fetch = (await import('node-fetch')).default;
-
-        const targetUrl = `https://www.trendyol.com/sr?q=${encodeURIComponent(q)}`;
-        // Try without render first (faster), only use render if needed
-        const apiUrl = `https://api.scraperapi.com/?api_key=${API_KEY}&url=${encodeURIComponent(targetUrl)}&country_code=tr`;
-
-        const response = await fetch(apiUrl);
-        if (!response.ok) {
-            return res.status(500).json({ error: `ScraperAPI: ${response.status}` });
-        }
-
-        const html = await response.text();
-        console.log(`Got ${html.length} bytes`);
-
-        // Debug: what price-related patterns exist?
-        const hasSellingPrice = html.includes('sellingPrice');
-        const hasDiscountedPrice = html.includes('discountedPrice');
-        const hasOriginalPrice = html.includes('originalPrice');
-        const hasPriceValue = html.includes('"price":');
-        const hasFiyat = html.includes('fiyat');
-        console.log(`Price patterns: selling=${hasSellingPrice}, discounted=${hasDiscountedPrice}, original=${hasOriginalPrice}, price=${hasPriceValue}, fiyat=${hasFiyat}`);
-
-        // Log a section that might contain product data
-        const priceSection = html.match(/.{0,200}price.{0,200}/i);
-        if (priceSection) {
-            console.log('Price context:', priceSection[0].substring(0, 300));
-        }
-
-        const products = parseProducts(html);
-        console.log(`Found ${products.length} products`);
-
-        const result = { query: q, count: products.length, products };
-        setCache(cacheKey, result);
+        const result = await fetchAndCacheSearch(q);
         res.json(result);
     } catch (error) {
         console.error('Error:', error.message);
@@ -311,4 +331,8 @@ function parseProducts(html) {
     return products;
 }
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    // Start pre-caching popular searches after 5 seconds
+    setTimeout(() => preCachePopularSearches(), 5000);
+});
