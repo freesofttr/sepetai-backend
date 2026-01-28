@@ -103,25 +103,35 @@ app.get('/api/search/all', async (req, res) => {
 async function fetchTrendyolAPI(query) {
     const fetch = (await import('node-fetch')).default;
 
+    // Try multiple API endpoints
     const endpoints = [
-        'https://public.trendyol.com/discovery-web-searchgw-service/v2/api/infinite-scroll/sr',
-        'https://public-mdc.trendyol.com/discovery-web-searchgw-service/v2/api/infinite-scroll/sr'
+        {
+            url: `https://apigw.trendyol.com/discovery-web-searchgw-service/v2/api/infinite-scroll/sr?q=${encodeURIComponent(query)}&qt=${encodeURIComponent(query)}&st=${encodeURIComponent(query)}&os=1&pi=1&culture=tr-TR&pId=0&storefrontId=1&language=tr`,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'tr-TR,tr;q=0.9',
+                'Origin': 'https://m.trendyol.com',
+                'Referer': 'https://m.trendyol.com/'
+            }
+        },
+        {
+            url: `https://www.trendyol.com/api/infinite-scroll/sr?q=${encodeURIComponent(query)}&qt=${encodeURIComponent(query)}&st=${encodeURIComponent(query)}&os=1`,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json',
+                'Accept-Language': 'tr-TR,tr;q=0.9'
+            }
+        }
     ];
 
-    for (const baseUrl of endpoints) {
+    for (const endpoint of endpoints) {
         try {
-            const url = `${baseUrl}?q=${encodeURIComponent(query)}&qt=${encodeURIComponent(query)}&st=${encodeURIComponent(query)}&os=1&pi=1&culture=tr-TR&pId=0&storefrontId=1&language=tr`;
+            console.log(`Trying Trendyol API: ${endpoint.url}`);
 
-            console.log(`Trying Trendyol API: ${url}`);
-
-            const response = await fetch(url, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'application/json',
-                    'Accept-Language': 'tr-TR,tr;q=0.9',
-                    'Origin': 'https://www.trendyol.com',
-                    'Referer': `https://www.trendyol.com/sr?q=${encodeURIComponent(query)}`
-                }
+            const response = await fetch(endpoint.url, {
+                headers: endpoint.headers,
+                timeout: 10000
             });
 
             console.log(`API response status: ${response.status}`);
@@ -149,7 +159,7 @@ async function fetchTrendyolAPI(query) {
                 }));
             }
         } catch (error) {
-            console.error(`API error for ${baseUrl}:`, error.message);
+            console.error(`API error:`, error.message);
         }
     }
 
