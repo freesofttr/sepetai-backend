@@ -141,21 +141,39 @@ app.get('/api/search/all', async (req, res) => {
 function parseProducts(html) {
     const products = [];
 
-    // Find all product card positions using indexOf
-    // Product cards have class="product-card" attribute
+    // Find all product card positions using multiple patterns
+    // Trendyol uses different card types:
+    // 1. class="product-card" - regular cards
+    // 2. seller-store-product-card - seller store cards
+    const cardMarkers = [
+        'class="product-card"',
+        'data-testid="seller-store-product-card"',
+        'seller-store-product-card-wrapper'
+    ];
+
     const cardPositions = [];
-    let searchStart = 0;
-    while (true) {
-        const pos = html.indexOf('class="product-card"', searchStart);
-        if (pos === -1) break;
-        // Find the start of the <a tag (go back to find <a)
-        let tagStart = html.lastIndexOf('<a', pos);
-        if (tagStart !== -1 && pos - tagStart < 200) {  // Make sure <a is within reasonable distance
-            cardPositions.push(tagStart);
+    for (const marker of cardMarkers) {
+        let searchStart = 0;
+        while (true) {
+            const pos = html.indexOf(marker, searchStart);
+            if (pos === -1) break;
+            // Find the start of the <a or <div tag
+            let tagStart = html.lastIndexOf('<a', pos);
+            if (tagStart === -1 || pos - tagStart > 200) {
+                tagStart = html.lastIndexOf('<div', pos);
+            }
+            if (tagStart !== -1 && pos - tagStart < 200) {
+                // Avoid duplicates
+                if (!cardPositions.some(p => Math.abs(p - tagStart) < 50)) {
+                    cardPositions.push(tagStart);
+                }
+            }
+            searchStart = pos + 1;
         }
-        searchStart = pos + 1;
     }
 
+    // Sort positions
+    cardPositions.sort((a, b) => a - b);
     console.log(`Found ${cardPositions.length} product card positions`);
 
     for (let i = 0; i < cardPositions.length && products.length < 30; i++) {
