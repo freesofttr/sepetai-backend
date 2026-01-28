@@ -1,9 +1,9 @@
 const express = require('express');
 const cors = require('cors');
-const scraperapiClient = require('scraperapi-sdk')('27c0df8063c38ebc97100e825ff4cd1c');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const API_KEY = '27c0df8063c38ebc97100e825ff4cd1c';
 
 app.use(cors());
 app.use(express.json());
@@ -19,10 +19,18 @@ app.get('/api/search/all', async (req, res) => {
     console.log(`Searching: ${q}`);
 
     try {
-        const url = `https://www.trendyol.com/sr?q=${encodeURIComponent(q)}`;
+        const targetUrl = `https://www.trendyol.com/sr?q=${encodeURIComponent(q)}`;
+        const apiUrl = `http://api.scraperapi.com?api_key=${API_KEY}&url=${encodeURIComponent(targetUrl)}&render=true&country_code=tr`;
 
-        const html = await scraperapiClient.get(url, { render: true, country_code: 'tr' });
+        console.log('Fetching from ScraperAPI...');
+        const response = await fetch(apiUrl);
 
+        if (!response.ok) {
+            console.log(`ScraperAPI error: ${response.status}`);
+            return res.status(500).json({ error: `ScraperAPI: ${response.status}` });
+        }
+
+        const html = await response.text();
         console.log(`Got ${html.length} bytes`);
 
         const products = parseProducts(html);
@@ -38,6 +46,7 @@ app.get('/api/search/all', async (req, res) => {
 function parseProducts(html) {
     const products = [];
 
+    // Try embedded JSON
     const match = html.match(/__SEARCH_APP_INITIAL_STATE__\s*=\s*(\{[\s\S]*?\});/);
     if (match) {
         try {
@@ -63,6 +72,7 @@ function parseProducts(html) {
         }
     }
 
+    // Fallback regex
     if (products.length === 0) {
         const names = [...html.matchAll(/prdct-desc-cntnr-name[^>]*>([^<]+)</g)];
         const prices = [...html.matchAll(/prc-box-(?:dscntd|sllng)[^>]*>([^<]+)</g)];
