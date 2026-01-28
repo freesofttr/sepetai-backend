@@ -288,6 +288,42 @@ const ACCESSORY_PATTERNS = [
     'askı', 'aski', 'kumanda', 'mouse pad', 'mousepad', 'jelatin', 'film'
 ];
 
+// Turkish character normalization for matching
+function normalizeTurkish(text) {
+    return text
+        .replace(/ı/g, 'i').replace(/İ/g, 'i')
+        .replace(/ö/g, 'o').replace(/Ö/g, 'o')
+        .replace(/ü/g, 'u').replace(/Ü/g, 'u')
+        .replace(/ş/g, 's').replace(/Ş/g, 's')
+        .replace(/ç/g, 'c').replace(/Ç/g, 'c')
+        .replace(/ğ/g, 'g').replace(/Ğ/g, 'g');
+}
+
+// Extract meaningful keywords from a query (words with 3+ chars)
+function extractQueryKeywords(query) {
+    const stopWords = ['ve', 'ile', 'icin', 'için', 'bir', 'bu', 'den', 'dan', 'ile', 'gibi', 'kadar', 'en', 'çok', 'cok', 'az', 'ucuz', 'pahalı', 'pahali', 'iyi', 'güzel', 'guzel', 'yeni', 'eski'];
+    return query.toLowerCase().trim()
+        .split(/\s+/)
+        .filter(w => w.length >= 2 && !stopWords.includes(w))
+        .map(w => normalizeTurkish(w));
+}
+
+// Calculate how well a product name matches the search query
+function calculateQueryRelevance(productName, queryKeywords) {
+    if (queryKeywords.length === 0) return 1.0;
+
+    const nameNorm = normalizeTurkish(productName.toLowerCase());
+    let matchCount = 0;
+
+    for (const keyword of queryKeywords) {
+        if (nameNorm.includes(keyword)) {
+            matchCount++;
+        }
+    }
+
+    return matchCount / queryKeywords.length;
+}
+
 function analyzeSearchIntent(query) {
     const queryLower = query.toLowerCase().trim();
 
@@ -299,7 +335,8 @@ function analyzeSearchIntent(query) {
                 intentLabel: config.intentLabel,
                 excludeKeywords: config.excludeKeywords,
                 mainProductIndicators: config.mainProductIndicators,
-                originalQuery: query
+                originalQuery: query,
+                queryKeywords: extractQueryKeywords(query)
             };
         }
     }
@@ -309,12 +346,21 @@ function analyzeSearchIntent(query) {
         intentLabel: 'Genel Arama',
         excludeKeywords: [],
         mainProductIndicators: [],
-        originalQuery: query
+        originalQuery: query,
+        queryKeywords: extractQueryKeywords(query)
     };
 }
 
 function classifyProduct(product, intent) {
     const nameLower = product.name.toLowerCase();
+
+    // Always check query keyword relevance (works for ALL searches)
+    const queryRelevance = calculateQueryRelevance(nameLower, intent.queryKeywords);
+
+    // If no query keywords match at all, it's likely irrelevant
+    if (intent.queryKeywords.length > 0 && queryRelevance === 0) {
+        return { type: 'Alakasız', confidence: 0.8, isRelevant: false };
+    }
 
     // Check if product name contains accessory patterns
     const matchedAccessoryPattern = ACCESSORY_PATTERNS.find(pattern => nameLower.includes(pattern));
@@ -326,11 +372,13 @@ function classifyProduct(product, intent) {
     const hasMainIndicator = intent.mainProductIndicators.some(ind => nameLower.includes(ind));
 
     if (intent.category === 'general') {
-        return { type: 'Ana Ürün', confidence: 0.7, isRelevant: true };
+        // For general searches, use query keyword match as confidence
+        const confidence = 0.5 + (queryRelevance * 0.5); // 0.5 to 1.0
+        return { type: 'Ana Ürün', confidence, isRelevant: true };
     }
 
     if (matchedExcludeKeyword || matchedAccessoryPattern) {
-        // If it ALSO has main product indicators AND the name is long enough (real products have longer names)
+        // If it ALSO has main product indicators AND the name is long enough
         if (hasMainIndicator && nameLower.length > 40 && !matchedAccessoryPattern) {
             return { type: 'Ana Ürün', confidence: 0.6, isRelevant: true };
         }
@@ -341,8 +389,9 @@ function classifyProduct(product, intent) {
         return { type: 'Ana Ürün', confidence: 0.9, isRelevant: true };
     }
 
-    // Default - probably relevant but lower confidence
-    return { type: 'Ana Ürün', confidence: 0.65, isRelevant: true };
+    // Default - use query relevance for confidence
+    const confidence = 0.5 + (queryRelevance * 0.3);
+    return { type: 'Ana Ürün', confidence, isRelevant: true };
 }
 
 function analyzeDiscount(product) {
@@ -380,11 +429,12 @@ function analyzeDiscount(product) {
 
 function smartFilterProducts(query, products) {
     const intent = analyzeSearchIntent(query);
-    console.log(`Search intent: ${intent.intentLabel} (${intent.category})`);
+    console.log(`Search intent: ${intent.intentLabel} (${intent.category}), keywords: [${intent.queryKeywords.join(', ')}]`);
 
     const analyzed = products.map(product => {
         const classification = classifyProduct(product, intent);
         const discount = analyzeDiscount(product);
+        const queryRelevance = calculateQueryRelevance(product.name.toLowerCase(), intent.queryKeywords);
 
         return {
             ...product,
@@ -393,18 +443,30 @@ function smartFilterProducts(query, products) {
             isRelevant: classification.isRelevant,
             discountStatus: discount.status,
             discountPercentage: discount.discountPercentage || 0,
-            shortComment: discount.comment || null
+            shortComment: discount.comment || null,
+            _queryRelevance: queryRelevance // internal sorting field
         };
     });
 
-    // Filter: relevant products first, sorted by confidence
+    // Filter: relevant products first, sorted by query relevance then confidence
     const relevant = analyzed
         .filter(p => p.isRelevant)
-        .sort((a, b) => b.relevanceScore - a.relevanceScore);
+        .sort((a, b) => {
+            // Primary sort: query relevance (how well name matches search)
+            const relDiff = b._queryRelevance - a._queryRelevance;
+            if (Math.abs(relDiff) > 0.1) return relDiff;
+            // Secondary sort: classification confidence
+            return b.relevanceScore - a.relevanceScore;
+        })
+        .map(p => {
+            // Remove internal field from response
+            const { _queryRelevance, ...rest } = p;
+            return rest;
+        });
 
     const removed = analyzed.filter(p => !p.isRelevant);
 
-    console.log(`Smart filter: ${relevant.length} relevant, ${removed.length} accessories removed`);
+    console.log(`Smart filter: ${relevant.length} relevant, ${removed.length} removed`);
 
     return {
         searchIntent: intent.intentLabel,
