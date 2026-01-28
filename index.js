@@ -55,6 +55,16 @@ app.get('/api/debug/html', async (req, res) => {
         const allScriptContent = scripts.map(s => s.replace(/<\/?script[^>]*>/gi, '')).join('\n');
         const hasProductInScripts = allScriptContent.includes('product');
 
+        // Find price containers specifically
+        const priceBoxMatches = html.match(/class="[^"]*price[^"]*"[^>]*>[^<]*</gi) || [];
+        const priceWrapperMatches = html.match(/class="[^"]*prc[^"]*"[^>]*>[^<]*</gi) || [];
+
+        // Look for selling/discounted price patterns
+        const sellingMatches = html.match(/sellingPrice[^}]*}/gi) || [];
+
+        // Find product card with surrounding context
+        const productCardSample = html.match(/product-card[\s\S]{0,3000}?(?=product-card|$)/i);
+
         res.json({
             htmlLength: html.length,
             patterns,
@@ -62,13 +72,15 @@ app.get('/api/debug/html', async (req, res) => {
             largestScriptLength: largestScript ? largestScript.length : 0,
             hasJsonArray: !!jsonArrayMatch,
             tlPriceExamples: priceNumbers.slice(0, 10),
+            priceBoxSamples: priceBoxMatches.slice(0, 10),
+            prcWrapperSamples: priceWrapperMatches.slice(0, 10),
+            sellingPriceSamples: sellingMatches.slice(0, 3),
+            productCardSample: productCardSample ? productCardSample[0].substring(0, 2000) : null,
             htmlContainsProduct: html.toLowerCase().includes('product'),
             htmlContainsSearch: html.toLowerCase().includes('search'),
             hasNextData: !!stateScriptMatch,
             hasNuxtData: !!nuxtDataMatch,
-            hasProductInScripts,
-            sampleEnd: html.substring(Math.max(0, html.length - 5000)),
-            sampleMiddle: html.substring(Math.floor(html.length / 2), Math.floor(html.length / 2) + 2000)
+            hasProductInScripts
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
