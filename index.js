@@ -212,9 +212,10 @@ function parseProducts(html) {
         if (products.some(p => p.productId === link.productId)) continue;
 
         // Get content after this link (the product card content)
+        // Use larger window since price might be far from the link
         const contentStart = link.position;
-        const contentEnd = productLinks[i + 1]?.position || contentStart + 5000;
-        const cardContent = html.substring(contentStart, Math.min(contentEnd, contentStart + 5000));
+        const contentEnd = productLinks[i + 1]?.position || contentStart + 8000;
+        const cardContent = html.substring(contentStart, Math.min(contentEnd, contentStart + 8000));
 
         // Extract brand from product-brand span
         const brandMatch = cardContent.match(/class="product-brand"[^>]*>([^<]+)/i);
@@ -235,14 +236,19 @@ function parseProducts(html) {
         }
 
         // Extract price - try multiple patterns
+        // Turkish price format: 47.999 TL (dot as thousands separator) or 47.999,99 TL (with decimal)
         let price = null;
         const pricePatterns = [
-            /class="price-section"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            /class="single-price"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            /class="sale-price"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            /class="discounted-price"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            />([0-9]{2,3}\.[0-9]{3}(?:\.[0-9]{3})?)\s*TL</i,  // Match 47.999 TL
-            />([0-9]+\.[0-9]{3})\s*TL/i  // Simpler pattern
+            // Class-based patterns
+            /class="price-section"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="single-price"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="sale-price"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="discounted-price"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="price-value"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            // Generic patterns - match prices like 47.999 TL, 1.234.567 TL
+            />([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?)\s*TL</i,
+            // Simple number followed by TL
+            />([0-9]+(?:\.[0-9]+)?)\s*TL</i
         ];
 
         for (const pattern of pricePatterns) {
@@ -269,7 +275,13 @@ function parseProducts(html) {
         }
 
         // Skip if we don't have essential data
-        if (!name || !price || price < 100) continue;
+        if (!name || !price || price < 100) {
+            // Debug: Log first few skipped products
+            if (i < 5) {
+                console.log(`Skipped product ${link.productId}: name=${name ? 'yes' : 'no'}, price=${price}`);
+            }
+            continue;
+        }
 
         const productUrl = 'https://www.trendyol.com' + link.href.replace(/&amp;/g, '&');
         const fullName = brand && !name.toLowerCase().startsWith(brand.toLowerCase())
