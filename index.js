@@ -20,41 +20,43 @@ app.get('/api/debug/html', async (req, res) => {
     try {
         const fetch = (await import('node-fetch')).default;
         const targetUrl = `https://www.trendyol.com/sr?q=${encodeURIComponent(q)}`;
-        const apiUrl = `https://api.scraperapi.com/?api_key=${API_KEY}&url=${encodeURIComponent(targetUrl)}&render=true&country_code=tr`;
+        // Add wait parameter for ScraperAPI to wait longer for JS rendering
+        const apiUrl = `https://api.scraperapi.com/?api_key=${API_KEY}&url=${encodeURIComponent(targetUrl)}&render=true&country_code=tr&wait_for_selector=.p-card-wrppr`;
 
         const response = await fetch(apiUrl);
         const html = await response.text();
 
-        // Find all window["__*__PROPS"] patterns and their keys
-        const windowPropsRegex = /window\["(__[^"]+__)"\]\s*=\s*(\{[\s\S]*?\});?\s*(?=<\/script>|window\[)/g;
-        const allWindowProps = [];
-        let match;
-        while ((match = windowPropsRegex.exec(html)) !== null) {
-            allWindowProps.push({
-                key: match[1],
-                valuePreview: match[2].substring(0, 300)
-            });
-        }
+        // Search for various data patterns in HTML
+        const patterns = {
+            sellingPrice: (html.match(/"sellingPrice"/g) || []).length,
+            price: (html.match(/"price"/g) || []).length,
+            discountedPrice: (html.match(/"discountedPrice"/g) || []).length,
+            pCardWrppr: (html.match(/p-card-wrppr/g) || []).length,
+            productCard: (html.match(/product-card/gi) || []).length,
+            TL: (html.match(/TL/g) || []).length,
+            prcBox: (html.match(/prc-box/g) || []).length,
+        };
 
-        // Look for product-related JSON structures
-        const productDataMatch = html.match(/window\["__search-app-products-container__PROPS"\]\s*=\s*(\{[\s\S]*?\});?\s*<\/script>/);
-        const searchResultMatch = html.match(/window\["__single-search-result__PROPS"\]\s*=\s*(\{[\s\S]*?\});?\s*<\/script>/);
+        // Find all script content
+        const scripts = html.match(/<script[^>]*>[\s\S]*?<\/script>/gi) || [];
+        const largestScript = scripts.sort((a, b) => b.length - a.length)[0];
 
-        // Find any JSON that contains sellingPrice or product arrays
-        const sellingPriceMatch = html.match(/"sellingPrice"\s*:\s*[\d.]+/g) || [];
-        const productNameMatch = html.match(/"name"\s*:\s*"[^"]{10,100}"/g) || [];
+        // Look for JSON arrays that might be product data
+        const jsonArrayMatch = html.match(/\[\s*\{[^[\]]*"id"[^[\]]*\}\s*(?:,\s*\{[^[\]]*\})*\s*\]/);
+
+        // Find any number patterns that could be prices (3-6 digit numbers)
+        const priceNumbers = html.match(/>\s*(\d{2,3}(?:[\.,]\d{2})?)\s*TL/g) || [];
 
         res.json({
             htmlLength: html.length,
-            windowPropsKeys: allWindowProps.map(p => p.key),
-            windowPropsCount: allWindowProps.length,
-            allWindowProps: allWindowProps.slice(0, 20),
-            hasSearchProducts: !!productDataMatch,
-            hasSearchResult: !!searchResultMatch,
-            sellingPriceCount: sellingPriceMatch.length,
-            sellingPriceSamples: sellingPriceMatch.slice(0, 5),
-            productNameSamples: productNameMatch.slice(0, 5),
-            htmlSample: html.substring(html.indexOf('window["__') || 0, (html.indexOf('window["__') || 0) + 5000)
+            patterns,
+            scriptCount: scripts.length,
+            largestScriptLength: largestScript ? largestScript.length : 0,
+            hasJsonArray: !!jsonArrayMatch,
+            tlPriceExamples: priceNumbers.slice(0, 10),
+            htmlContainsProduct: html.toLowerCase().includes('product'),
+            htmlContainsSearch: html.toLowerCase().includes('search'),
+            sampleMiddle: html.substring(Math.floor(html.length / 2), Math.floor(html.length / 2) + 3000)
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
