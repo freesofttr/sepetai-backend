@@ -211,25 +211,59 @@ function parseProducts(html) {
     if (products.length < 10) {
         console.log(`Only ${products.length} from seller cards, trying regular cards...`);
 
-        // Parse regular product cards with info-wrapper structure
-        const infoWrapperPattern = /class="info-wrapper"[\s\S]*?class="product-brand"[^>]*>([^<]+)[\s\S]*?class="product-name"[^>]*>([^<]+)[\s\S]*?class="price-(?:section|value)"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/gi;
+        // Find all info-wrapper positions for regular product cards
+        const infoWrapperPositions = [];
+        let searchPos = 0;
+        while (true) {
+            const pos = html.indexOf('class="info-wrapper"', searchPos);
+            if (pos === -1) break;
+            infoWrapperPositions.push(pos);
+            searchPos = pos + 20;
+        }
 
-        let match;
-        while ((match = infoWrapperPattern.exec(html)) !== null && products.length < 30) {
-            const brand = match[1].trim();
-            const name = match[2].trim();
-            const price = parseFloat(match[3].replace(/\./g, '').replace(',', '.'));
+        console.log(`Found ${infoWrapperPositions.length} info-wrapper elements`);
 
-            if (price >= 100 && price <= 500000) {
-                // Check if we already have this product (by name)
+        for (let i = 0; i < infoWrapperPositions.length && products.length < 30; i++) {
+            const startPos = infoWrapperPositions[i];
+            const endPos = infoWrapperPositions[i + 1] || startPos + 3000;
+            const block = html.substring(startPos, Math.min(endPos, startPos + 3000));
+
+            // Extract brand - text before any < inside product-brand span
+            const brandMatch = block.match(/class="product-brand"[^>]*>([^<]+)/i);
+            const brand = brandMatch ? brandMatch[1].trim() : null;
+
+            // Extract product name - handle <!-- --> comment
+            // Pattern: class="product-name"...> <!-- -->Actual Name
+            const nameMatch = block.match(/class="product-name"[^>]*>(?:\s*<!--[^>]*-->)?\s*([^<]+)/i);
+            const name = nameMatch ? nameMatch[1].trim() : null;
+
+            // Extract price from price-section or sale-price
+            const priceMatch = block.match(/class="(?:price-section|sale-price)"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i);
+            let price = null;
+            if (priceMatch) {
+                price = parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.'));
+            }
+
+            // Extract product URL from surrounding context
+            const contextStart = Math.max(0, startPos - 500);
+            const context = html.substring(contextStart, startPos + 500);
+            const urlMatch = context.match(/href="([^"]*-p-[0-9]+[^"]*)"/i);
+            const productUrl = urlMatch ? 'https://www.trendyol.com' + urlMatch[1] : null;
+
+            // Extract image URL
+            const imgMatch = context.match(/(?:data-src|src)="(https:\/\/cdn\.dsmcdn\.com[^"]*\/prod[^"]*\.jpg)"/i);
+            const imageUrl = imgMatch ? imgMatch[1] : null;
+
+            if (name && price && price >= 100 && price <= 500000) {
+                // Check if we already have this product
                 const exists = products.some(p => p.name.includes(name.substring(0, 20)));
                 if (!exists) {
                     products.push({
-                        name: `${brand} ${name}`,
+                        name: brand ? `${brand} ${name}` : name,
                         price: price,
                         originalPrice: null,
-                        imageUrl: null,
-                        productUrl: null,
+                        imageUrl: imageUrl,
+                        productUrl: productUrl,
                         brand: brand,
                         seller: null,
                         store: 'Trendyol'
