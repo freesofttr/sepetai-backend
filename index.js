@@ -141,103 +141,82 @@ app.get('/api/search/all', async (req, res) => {
 function parseProducts(html) {
     const products = [];
 
-    // Find all product card positions using multiple patterns
-    // Trendyol uses different card types:
-    // 1. class="product-card" - regular cards
-    // 2. seller-store-product-card - seller store cards
-    const cardMarkers = [
-        'class="product-card"',
-        'data-testid="seller-store-product-card"',
-        'seller-store-product-card-wrapper'
-    ];
-
-    const cardPositions = [];
-    for (const marker of cardMarkers) {
-        let searchStart = 0;
-        while (true) {
-            const pos = html.indexOf(marker, searchStart);
-            if (pos === -1) break;
-            // Find the start of the <a or <div tag
-            let tagStart = html.lastIndexOf('<a', pos);
-            if (tagStart === -1 || pos - tagStart > 200) {
-                tagStart = html.lastIndexOf('<div', pos);
-            }
-            if (tagStart !== -1 && pos - tagStart < 200) {
-                // Avoid duplicates
-                if (!cardPositions.some(p => Math.abs(p - tagStart) < 50)) {
-                    cardPositions.push(tagStart);
-                }
-            }
-            searchStart = pos + 1;
-        }
+    // Strategy: Find all info-wrapper-div elements (contain brand + name)
+    // Then look for the next price element after each info wrapper
+    const infoWrapperPositions = [];
+    let searchStart = 0;
+    while (true) {
+        const pos = html.indexOf('info-wrapper', searchStart);
+        if (pos === -1) break;
+        infoWrapperPositions.push(pos);
+        searchStart = pos + 20;
     }
 
-    // Sort positions
-    cardPositions.sort((a, b) => a - b);
-    console.log(`Found ${cardPositions.length} product card positions`);
+    console.log(`Found ${infoWrapperPositions.length} info-wrapper positions`);
 
-    for (let i = 0; i < cardPositions.length && products.length < 30; i++) {
-        // Get card content from this position to the next card (or end)
-        const startPos = cardPositions[i];
-        const endPos = cardPositions[i + 1] || startPos + 5000;
-        const cardContent = html.substring(startPos, Math.min(endPos, startPos + 5000));
+    for (let i = 0; i < infoWrapperPositions.length && products.length < 30; i++) {
+        const startPos = infoWrapperPositions[i];
+        // Look at content from this wrapper to the next (or 3000 chars)
+        const endPos = infoWrapperPositions[i + 1] || startPos + 3000;
+        const blockContent = html.substring(startPos, Math.min(endPos, startPos + 3000));
 
         // Extract brand
-        const brandMatch = cardContent.match(/<span[^>]*class="product-brand"[^>]*>([^<]+)/i);
+        const brandMatch = blockContent.match(/<span[^>]*class="product-brand"[^>]*>([^<]+)/i);
         const brand = brandMatch ? brandMatch[1].trim() : null;
 
         // Extract product name
-        const nameMatch = cardContent.match(/<span[^>]*class="product-name"[^>]*>\s*(?:<!--[^>]*-->)?\s*([^<]+)/i);
+        const nameMatch = blockContent.match(/<span[^>]*class="product-name"[^>]*>\s*(?:<!--[^>]*-->)?\s*([^<]+)/i);
         const name = nameMatch ? nameMatch[1].trim() : null;
 
-        // Extract price - try multiple patterns from Trendyol HTML
-        // Known patterns:
-        // - class="product-price" data-testid="seller-store-product-card-price">16.999 TL
-        // - class="price-value">9.899,01 TL
-        // - class="price-section">9.899,01 TL
+        // Skip if no name found
+        if (!name) continue;
+
+        // Extract price - look for any price pattern in this block or shortly after
         let price = null;
         const pricePatterns = [
             /class="product-price"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
             /class="price-value"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
             /class="price-section"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
             /class="discounted-price"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            /data-testid="[^"]*price[^"]*"[^>]*>([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            />([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?)\s*TL</i  // General pattern with closing <
+            />([0-9]{1,3}\.[0-9]{3}(?:\.[0-9]{3})?(?:,[0-9]{2})?)\s*TL</i
         ];
 
+        // Also look in a wider range for the price
+        const priceSearchContent = html.substring(startPos, Math.min(startPos + 4000, html.length));
+
         for (const pattern of pricePatterns) {
-            const priceMatch = cardContent.match(pattern);
+            const priceMatch = priceSearchContent.match(pattern);
             if (priceMatch) {
-                // Convert Turkish format: 16.999 -> 16999 or 9.899,01 -> 9899.01
                 let priceStr = priceMatch[1].replace(/\./g, '').replace(',', '.');
                 price = parseFloat(priceStr);
                 if (price >= 100 && price <= 500000) {
                     break;
                 }
-                price = null;  // Invalid price, try next pattern
+                price = null;
             }
         }
 
-        // Extract product URL
-        const urlMatch = cardContent.match(/href="([^"]*-p-[0-9]+[^"]*)"/i);
+        if (!price) continue;
+
+        // Extract product URL - look before the info-wrapper (in the parent card)
+        const cardContext = html.substring(Math.max(0, startPos - 500), startPos + 500);
+        const urlMatch = cardContext.match(/href="([^"]*-p-[0-9]+[^"]*)"/i);
         const productUrl = urlMatch ? 'https://www.trendyol.com' + urlMatch[1] : null;
 
         // Extract image URL
-        const imgMatch = cardContent.match(/(?:data-src|src)="(https:\/\/cdn\.dsmcdn\.com\/[^"]*(?:zoom|product)[^"]*)"/i);
+        const imgMatch = cardContext.match(/(?:data-src|src)="(https:\/\/cdn\.dsmcdn\.com[^"]*\/prod[^"]*\.jpg)"/i);
         const imageUrl = imgMatch ? imgMatch[1].replace(/\\u002F/g, '/') : null;
 
-        if (name && price) {
-            products.push({
-                name: brand ? `${brand} ${name}` : name,
-                price: price,
-                originalPrice: null,
-                imageUrl: imageUrl,
-                productUrl: productUrl,
-                brand: brand,
-                seller: null,
-                store: 'Trendyol'
-            });
-        }
+        products.push({
+            name: brand ? `${brand} ${name}` : name,
+            price: price,
+            originalPrice: null,
+            imageUrl: imageUrl,
+            productUrl: productUrl,
+            brand: brand,
+            seller: null,
+            store: 'Trendyol'
+        });
     }
 
     console.log(`Final: ${products.length} products`);
