@@ -54,19 +54,72 @@ async function preCachePopularSearches() {
     console.log('Pre-caching complete');
 }
 
-async function fetchAndCacheSearch(query) {
+// Scrape a single store and return products
+async function scrapeStore(query, store) {
     const fetch = (await import('node-fetch')).default;
-    const targetUrl = `https://www.trendyol.com/sr?q=${encodeURIComponent(query)}`;
-    const apiUrl = `https://api.scraperapi.com/?api_key=${API_KEY}&url=${encodeURIComponent(targetUrl)}&country_code=tr`;
 
-    const response = await fetch(apiUrl);
-    if (!response.ok) throw new Error(`ScraperAPI: ${response.status}`);
+    const storeConfigs = {
+        trendyol: {
+            url: `https://www.trendyol.com/sr?q=${encodeURIComponent(query)}`,
+            parser: parseTrendyolProducts
+        },
+        hepsiburada: {
+            url: `https://www.hepsiburada.com/ara?q=${encodeURIComponent(query)}`,
+            parser: parseHepsiburadaProducts
+        },
+        n11: {
+            url: `https://www.n11.com/arama?q=${encodeURIComponent(query)}`,
+            parser: parseN11Products
+        },
+        amazon: {
+            url: `https://www.amazon.com.tr/s?k=${encodeURIComponent(query)}`,
+            parser: parseAmazonProducts
+        }
+    };
 
-    const html = await response.text();
-    const rawProducts = parseProducts(html);
+    const config = storeConfigs[store];
+    if (!config) return [];
+
+    try {
+        const apiUrl = `https://api.scraperapi.com/?api_key=${API_KEY}&url=${encodeURIComponent(config.url)}&country_code=tr`;
+        console.log(`Scraping ${store}: ${query}`);
+
+        const response = await fetch(apiUrl, { timeout: 30000 });
+        if (!response.ok) {
+            console.log(`${store} scrape failed: ${response.status}`);
+            return [];
+        }
+
+        const html = await response.text();
+        const products = config.parser(html);
+        console.log(`${store}: parsed ${products.length} products`);
+        return products;
+    } catch (e) {
+        console.error(`${store} error: ${e.message}`);
+        return [];
+    }
+}
+
+async function fetchAndCacheSearch(query) {
+    // Scrape all stores in parallel
+    const [trendyolProducts, hepsiburadaProducts, n11Products, amazonProducts] = await Promise.all([
+        scrapeStore(query, 'trendyol'),
+        scrapeStore(query, 'hepsiburada'),
+        scrapeStore(query, 'n11'),
+        scrapeStore(query, 'amazon')
+    ]);
+
+    const allProducts = [
+        ...trendyolProducts,
+        ...hepsiburadaProducts,
+        ...n11Products,
+        ...amazonProducts
+    ];
+
+    console.log(`Total scraped from all stores: ${allProducts.length} (T:${trendyolProducts.length} H:${hepsiburadaProducts.length} N:${n11Products.length} A:${amazonProducts.length})`);
 
     // Apply smart filtering
-    const filtered = smartFilterProducts(query, rawProducts);
+    const filtered = smartFilterProducts(query, allProducts);
 
     const result = {
         query,
@@ -712,7 +765,7 @@ function smartFilterProducts(query, products) {
 // HTML PARSING
 // ==========================================
 
-function parseProducts(html) {
+function parseTrendyolProducts(html) {
     const products = [];
 
     // Find all product links: href="/brand/product-name-p-123456?..."
@@ -840,6 +893,308 @@ function parseProducts(html) {
     }
 
     console.log(`Parsed: ${products.length} products`);
+    return products;
+}
+
+// ==========================================
+// HEPSIBURADA PARSER
+// ==========================================
+function parseHepsiburadaProducts(html) {
+    const products = [];
+
+    // Hepsiburada product cards use data-test-id="product-card-item" or class="productListContent"
+    // Product links: href="/[brand]-[product-name]-p-HBCV[id]" or href="/[product-name]-pm-[id]"
+    const productLinkRegex = /href="(\/[^"]*-p-([A-Z0-9]+)[^"]*)"/gi;
+    const productLinks = [];
+    let linkMatch;
+
+    while ((linkMatch = productLinkRegex.exec(html)) !== null) {
+        // Skip duplicate product IDs
+        if (productLinks.some(p => p.productId === linkMatch[2])) continue;
+        productLinks.push({
+            href: linkMatch[1],
+            productId: linkMatch[2],
+            position: linkMatch.index
+        });
+    }
+
+    for (let i = 0; i < productLinks.length && products.length < 20; i++) {
+        const link = productLinks[i];
+        const contentStart = link.position;
+        const contentEnd = productLinks[i + 1]?.position || contentStart + 8000;
+        const cardContent = html.substring(contentStart, Math.min(contentEnd, contentStart + 8000));
+
+        // Extract product name
+        const namePatterns = [
+            /data-test-id="product-card-name"[^>]*>([^<]+)/i,
+            /class="[^"]*product(?:Description|Name|Title)[^"]*"[^>]*>([^<]+)/i,
+            /title="([^"]{10,})"/i
+        ];
+        let name = null;
+        for (const pattern of namePatterns) {
+            const m = cardContent.match(pattern);
+            if (m) { name = m[1].trim(); break; }
+        }
+
+        if (!name && link.href) {
+            const slug = link.href.split('-p-')[0].replace(/^\//, '');
+            name = slug.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        }
+
+        // Extract price
+        let price = null;
+        const pricePatterns = [
+            /data-test-id="price-current-price"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="[^"]*price-value[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="[^"]*product-price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            />([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?)\s*TL</i
+        ];
+
+        for (const pattern of pricePatterns) {
+            const m = cardContent.match(pattern);
+            if (m) {
+                price = parseFloat(m[1].replace(/\./g, '').replace(',', '.'));
+                if (price >= 1 && price <= 999999) break;
+                price = null;
+            }
+        }
+
+        // Extract original price
+        let originalPrice = null;
+        const orgPatterns = [
+            /data-test-id="price-old-price"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="[^"]*(?:old|original)[^"]*price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="[^"]*line-through[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /<del[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL\s*<\/del>/i
+        ];
+        for (const pattern of orgPatterns) {
+            const m = cardContent.match(pattern);
+            if (m) {
+                const op = parseFloat(m[1].replace(/\./g, '').replace(',', '.'));
+                if (op > 0 && price && op > price) { originalPrice = op; break; }
+            }
+        }
+
+        // Extract image
+        let imageUrl = null;
+        const imgMatch = cardContent.match(/src="(https:\/\/[^"]*(?:productimages|images\.hepsiburada)[^"]*\.(?:jpg|png|webp)[^"]*)"/i)
+            || cardContent.match(/data-src="(https:\/\/[^"]*\.(?:jpg|png|webp)[^"]*)"/i);
+        if (imgMatch) imageUrl = imgMatch[1];
+
+        if (!name || !price || price < 1) continue;
+
+        let cleanHref = link.href.replace(/&amp;/g, '&').split('?')[0];
+        products.push({
+            name,
+            price,
+            originalPrice,
+            imageUrl,
+            productUrl: 'https://www.hepsiburada.com' + cleanHref,
+            productId: link.productId,
+            brand: null,
+            seller: null,
+            store: 'Hepsiburada'
+        });
+    }
+
+    console.log(`Hepsiburada parsed: ${products.length} products`);
+    return products;
+}
+
+// ==========================================
+// N11 PARSER
+// ==========================================
+function parseN11Products(html) {
+    const products = [];
+
+    // N11 product links: href="https://www.n11.com/urun/[product-slug]/[id]"
+    const productLinkRegex = /href="(https:\/\/www\.n11\.com\/urun\/([^"]+))"/gi;
+    const productLinks = [];
+    let linkMatch;
+
+    while ((linkMatch = productLinkRegex.exec(html)) !== null) {
+        const slug = linkMatch[2];
+        if (productLinks.some(p => p.slug === slug)) continue;
+        productLinks.push({
+            href: linkMatch[1],
+            slug,
+            position: linkMatch.index
+        });
+    }
+
+    for (let i = 0; i < productLinks.length && products.length < 20; i++) {
+        const link = productLinks[i];
+        const contentStart = Math.max(0, link.position - 500);
+        const contentEnd = productLinks[i + 1]?.position || contentStart + 8000;
+        const cardContent = html.substring(contentStart, Math.min(contentEnd, contentStart + 8000));
+
+        // Extract name
+        const namePatterns = [
+            /class="[^"]*productName[^"]*"[^>]*>([^<]+)/i,
+            /class="[^"]*product-title[^"]*"[^>]*>([^<]+)/i,
+            /title="([^"]{10,})"/i
+        ];
+        let name = null;
+        for (const pattern of namePatterns) {
+            const m = cardContent.match(pattern);
+            if (m) { name = m[1].trim(); break; }
+        }
+
+        if (!name) {
+            // Extract from slug
+            const slugParts = link.slug.split('/')[0];
+            name = slugParts.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        }
+
+        // Extract price
+        let price = null;
+        const pricePatterns = [
+            /class="[^"]*newPrice[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="[^"]*price[^"]*"[^>]*ins[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="[^"]*price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            />([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?)\s*TL</i
+        ];
+        for (const pattern of pricePatterns) {
+            const m = cardContent.match(pattern);
+            if (m) {
+                price = parseFloat(m[1].replace(/\./g, '').replace(',', '.'));
+                if (price >= 1 && price <= 999999) break;
+                price = null;
+            }
+        }
+
+        // Extract original price
+        let originalPrice = null;
+        const orgPatterns = [
+            /class="[^"]*oldPrice[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /class="[^"]*price[^"]*"[^>]*del[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
+            /<del[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL\s*<\/del>/i
+        ];
+        for (const pattern of orgPatterns) {
+            const m = cardContent.match(pattern);
+            if (m) {
+                const op = parseFloat(m[1].replace(/\./g, '').replace(',', '.'));
+                if (op > 0 && price && op > price) { originalPrice = op; break; }
+            }
+        }
+
+        // Extract image
+        let imageUrl = null;
+        const imgMatch = cardContent.match(/src="(https:\/\/[^"]*n11[^"]*\.(?:jpg|png|webp)[^"]*)"/i)
+            || cardContent.match(/data-src="(https:\/\/[^"]*\.(?:jpg|png|webp)[^"]*)"/i);
+        if (imgMatch) imageUrl = imgMatch[1];
+
+        if (!name || !price || price < 1) continue;
+
+        // Extract product ID from URL
+        const idMatch = link.slug.match(/(\d+)$/);
+        const productId = idMatch ? idMatch[1] : link.slug.replace(/\//g, '-');
+
+        products.push({
+            name,
+            price,
+            originalPrice,
+            imageUrl,
+            productUrl: link.href,
+            productId: 'n11-' + productId,
+            brand: null,
+            seller: null,
+            store: 'N11'
+        });
+    }
+
+    console.log(`N11 parsed: ${products.length} products`);
+    return products;
+}
+
+// ==========================================
+// AMAZON TR PARSER
+// ==========================================
+function parseAmazonProducts(html) {
+    const products = [];
+
+    // Amazon product cards: data-asin="B0..." or class="s-result-item" with data-asin
+    const asinRegex = /data-asin="([A-Z0-9]{10})"/gi;
+    const asins = [];
+    let asinMatch;
+
+    while ((asinMatch = asinRegex.exec(html)) !== null) {
+        if (asins.some(a => a.asin === asinMatch[1])) continue;
+        if (asinMatch[1] === '') continue;
+        asins.push({
+            asin: asinMatch[1],
+            position: asinMatch.index
+        });
+    }
+
+    for (let i = 0; i < asins.length && products.length < 20; i++) {
+        const item = asins[i];
+        const contentStart = item.position;
+        const contentEnd = asins[i + 1]?.position || contentStart + 10000;
+        const cardContent = html.substring(contentStart, Math.min(contentEnd, contentStart + 10000));
+
+        // Extract name
+        const namePatterns = [
+            /class="[^"]*a-size-base-plus[^"]*"[^>]*>([^<]+)/i,
+            /class="[^"]*a-size-medium[^"]*"[^>]*>([^<]+)/i,
+            /class="[^"]*s-line-clamp[^"]*"[^>]*>\s*(?:<[^>]+>)*\s*([^<]+)/i,
+            /aria-label="([^"]{10,})"/i
+        ];
+        let name = null;
+        for (const pattern of namePatterns) {
+            const m = cardContent.match(pattern);
+            if (m && m[1].trim().length > 5) { name = m[1].trim(); break; }
+        }
+
+        // Extract price - Amazon uses class="a-price" with whole and fraction parts
+        let price = null;
+        const pricePatterns = [
+            /class="a-price"[^>]*>.*?class="a-offscreen"[^>]*>([0-9.,]+)\s*TL/is,
+            /class="a-offscreen"[^>]*>\s*([0-9.,]+)\s*TL/i,
+            /class="[^"]*a-price-whole[^"]*"[^>]*>([0-9.]+)/i,
+            />([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?)\s*TL</i
+        ];
+        for (const pattern of pricePatterns) {
+            const m = cardContent.match(pattern);
+            if (m) {
+                let priceStr = m[1].trim();
+                // Handle "47.499,00" format
+                price = parseFloat(priceStr.replace(/\./g, '').replace(',', '.'));
+                if (price >= 1 && price <= 999999) break;
+                price = null;
+            }
+        }
+
+        // Extract original price (strikethrough)
+        let originalPrice = null;
+        const orgMatch = cardContent.match(/class="[^"]*a-text-price[^"]*"[^>]*>.*?class="a-offscreen"[^>]*>([0-9.,]+)\s*TL/is);
+        if (orgMatch) {
+            const op = parseFloat(orgMatch[1].replace(/\./g, '').replace(',', '.'));
+            if (op > 0 && price && op > price) originalPrice = op;
+        }
+
+        // Extract image
+        let imageUrl = null;
+        const imgMatch = cardContent.match(/src="(https:\/\/m\.media-amazon\.com\/images[^"]+)"/i)
+            || cardContent.match(/src="(https:\/\/[^"]*\.(?:jpg|png|webp)[^"]*)"/i);
+        if (imgMatch) imageUrl = imgMatch[1];
+
+        if (!name || !price || price < 1) continue;
+
+        products.push({
+            name,
+            price,
+            originalPrice,
+            imageUrl,
+            productUrl: `https://www.amazon.com.tr/dp/${item.asin}`,
+            productId: 'amz-' + item.asin,
+            brand: null,
+            seller: null,
+            store: 'Amazon'
+        });
+    }
+
+    console.log(`Amazon parsed: ${products.length} products`);
     return products;
 }
 
