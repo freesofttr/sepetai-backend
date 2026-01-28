@@ -12,6 +12,39 @@ app.get('/', (req, res) => {
     res.json({ status: 'ok', message: 'SepetAI Backend' });
 });
 
+// Debug endpoint to see raw HTML structure
+app.get('/api/debug/html', async (req, res) => {
+    const { q } = req.query;
+    if (!q) return res.status(400).json({ error: 'Query required' });
+
+    try {
+        const fetch = (await import('node-fetch')).default;
+        const targetUrl = `https://www.trendyol.com/sr?q=${encodeURIComponent(q)}`;
+        const apiUrl = `https://api.scraperapi.com/?api_key=${API_KEY}&url=${encodeURIComponent(targetUrl)}&render=true&country_code=tr`;
+
+        const response = await fetch(apiUrl);
+        const html = await response.text();
+
+        // Find JSON-like structures in HTML
+        const scriptMatches = html.match(/<script[^>]*>([^<]*(?:product|price|fiyat)[^<]*)<\/script>/gi) || [];
+        const windowMatches = html.match(/window\["[^"]+"\]\s*=\s*\{[^}]+\}/g) || [];
+        const jsonMatches = html.match(/\{[^{}]*"(?:id|name|price)"[^{}]*\}/g) || [];
+
+        res.json({
+            htmlLength: html.length,
+            hasProductWord: html.includes('product'),
+            hasPriceWord: html.includes('price'),
+            hasFiyatWord: html.includes('fiyat'),
+            scriptSnippets: scriptMatches.slice(0, 3).map(s => s.substring(0, 500)),
+            windowObjects: windowMatches.slice(0, 5),
+            jsonSnippets: jsonMatches.slice(0, 10),
+            htmlSample: html.substring(0, 5000)
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.get('/api/search/all', async (req, res) => {
     const { q } = req.query;
     if (!q) return res.status(400).json({ error: 'Query required' });
