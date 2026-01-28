@@ -62,10 +62,17 @@ app.get('/api/debug/html', async (req, res) => {
         // Look for selling/discounted price patterns
         const sellingMatches = html.match(/sellingPrice[^}]*}/gi) || [];
 
-        // Find product card with surrounding context
-        const productCardSample = html.match(/product-card[\s\S]{0,3000}?(?=product-card|$)/i);
+        // Find a complete product card sample
+        const cardStartIdx = html.indexOf('class="product-card"');
+        const productCardSample = cardStartIdx > -1 ? html.substring(cardStartIdx, cardStartIdx + 4000) : null;
+
+        // Find how product cards are structured
+        const cardCount = (html.match(/class="product-card"/g) || []).length;
+        const sellerStoreCardCount = (html.match(/seller-store-product-card/g) || []).length;
 
         res.json({
+            cardCount,
+            sellerStoreCardCount,
             htmlLength: html.length,
             patterns,
             scriptCount: scripts.length,
