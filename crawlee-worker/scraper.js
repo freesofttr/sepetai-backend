@@ -96,62 +96,101 @@ const STORE_CONFIGS = {
 async function parseTrendyol(page) {
     return await page.evaluate(() => {
         const products = [];
-        // Try multiple selectors for Trendyol products
-        const productCards = document.querySelectorAll('.p-card-wrppr, .p-card-chldrn-cntnr, [class*="ProductCard"], .product-card');
+        const seenIds = new Set();
 
-        productCards.forEach((card, index) => {
-            if (index >= 25) return;
+        // Strategy 1: Find all product links first, then work backwards to find cards
+        const productLinks = document.querySelectorAll('a[href*="-p-"]');
+
+        productLinks.forEach((link, index) => {
+            if (products.length >= 25) return;
+
             try {
-                const link = card.querySelector('a[href*="/p-"]') || card.querySelector('a');
-                // Multiple selector options for product name
-                const nameEl = card.querySelector('.prdct-desc-cntnr-name, .product-name, [class*="productName"], .prdct-desc-cntnr span');
-                // Multiple selector options for price
-                const priceEl = card.querySelector('.prc-box-dscntd, .prc-box-sllng, [class*="discountedPrice"], [class*="sellingPrice"], .price');
-                const originalPriceEl = card.querySelector('.prc-box-orgnl, [class*="originalPrice"], .old-price');
-                const imgEl = card.querySelector('img');
-
-                if (!link) return;
-
                 const href = link.getAttribute('href') || '';
+                const productIdMatch = href.match(/-p-(\d+)/);
+                if (!productIdMatch) return;
 
-                // Get price from various elements
+                const productId = productIdMatch[1];
+                if (seenIds.has(productId)) return;
+                seenIds.add(productId);
+
+                // Find the card container (go up the DOM tree)
+                let card = link.closest('[class*="p-card"], [class*="product"], [class*="prdct"]') || link.parentElement?.parentElement;
+                if (!card) card = link;
+
+                // Find price - try multiple patterns
                 let price = 0;
-                if (priceEl) {
-                    const priceText = priceEl.textContent || '';
-                    price = parseFloat(priceText.replace(/[^\d,]/g, '').replace(',', '.'));
+                const priceSelectors = [
+                    '.prc-box-dscntd', '.prc-box-sllng', '[class*="prc"]',
+                    '[class*="price"]', '[class*="Price"]', '.price'
+                ];
+
+                for (const sel of priceSelectors) {
+                    const priceEl = card.querySelector(sel);
+                    if (priceEl) {
+                        const priceText = priceEl.textContent || '';
+                        const parsed = parseFloat(priceText.replace(/[^\d,]/g, '').replace(',', '.'));
+                        if (parsed > 0) {
+                            price = parsed;
+                            break;
+                        }
+                    }
                 }
 
-                // Fallback: search for price in card text
-                if (!price || price === 0) {
+                // Fallback: regex search in card text
+                if (!price) {
                     const cardText = card.textContent || '';
+                    // Match Turkish price format: 1.234,56 TL or 1234,56 TL
                     const priceMatch = cardText.match(/(\d{1,3}(?:\.\d{3})*,\d{2})\s*TL/);
                     if (priceMatch) {
                         price = parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.'));
                     }
                 }
 
+                if (!price || price <= 0) return;
+
+                // Find product name
+                let name = '';
+                const nameSelectors = [
+                    '.prdct-desc-cntnr-name', '[class*="product-name"]', '[class*="productName"]',
+                    '.prdct-desc-cntnr span', '[class*="name"]', 'h3', 'h2'
+                ];
+                for (const sel of nameSelectors) {
+                    const nameEl = card.querySelector(sel);
+                    if (nameEl && nameEl.textContent?.trim()) {
+                        name = nameEl.textContent.trim();
+                        break;
+                    }
+                }
+                if (!name) {
+                    // Use link title or text content
+                    name = link.getAttribute('title') || link.textContent?.trim() || 'Unknown';
+                }
+
+                // Find image
+                const imgEl = card.querySelector('img');
+                let imageUrl = imgEl?.src || imgEl?.getAttribute('data-src') || imgEl?.getAttribute('data-original') || null;
+
+                // Find original price
                 let originalPrice = null;
-                if (originalPriceEl) {
-                    const origText = originalPriceEl.textContent || '';
-                    originalPrice = parseFloat(origText.replace(/[^\d,]/g, '').replace(',', '.'));
+                const origPriceEl = card.querySelector('.prc-box-orgnl, [class*="originalPrice"], [class*="old-price"]');
+                if (origPriceEl) {
+                    const origText = origPriceEl.textContent || '';
+                    const parsed = parseFloat(origText.replace(/[^\d,]/g, '').replace(',', '.'));
+                    if (parsed > price) originalPrice = parsed;
                 }
 
-                const productIdMatch = href.match(/-p-(\d+)/);
-                const productId = productIdMatch ? productIdMatch[1] : null;
-
-                if (price && price > 0 && productId) {
-                    products.push({
-                        name: nameEl?.textContent?.trim() || 'Unknown',
-                        price,
-                        originalPrice: originalPrice > price ? originalPrice : null,
-                        imageUrl: imgEl?.src || imgEl?.getAttribute('data-src') || null,
-                        productUrl: href.startsWith('http') ? href : 'https://www.trendyol.com' + href,
-                        productId: 'ty-' + productId,
-                        store: 'Trendyol'
-                    });
-                }
+                products.push({
+                    name: name.substring(0, 200),
+                    price,
+                    originalPrice,
+                    imageUrl,
+                    productUrl: href.startsWith('http') ? href : 'https://www.trendyol.com' + href,
+                    productId: 'ty-' + productId,
+                    store: 'Trendyol'
+                });
             } catch (e) {}
         });
+
         return products;
     });
 }
@@ -159,31 +198,48 @@ async function parseTrendyol(page) {
 async function parseHepsiburada(page) {
     return await page.evaluate(() => {
         const products = [];
-        // Multiple selectors for Hepsiburada
-        const productCards = document.querySelectorAll('[data-test-id="product-card-item"], .product-card, .productListContent li, [class*="ProductCard"]');
+        const seenIds = new Set();
 
-        productCards.forEach((card, index) => {
-            if (index >= 25) return;
+        // Strategy: Find all product links first
+        const productLinks = document.querySelectorAll('a[href*="-p-"], a[href*="/p-"]');
+
+        productLinks.forEach((link) => {
+            if (products.length >= 25) return;
+
             try {
-                const link = card.querySelector('a[href*="-p-"]') || card.querySelector('a');
-                const nameEl = card.querySelector('[data-test-id="product-card-name"], .product-title, [class*="productName"]');
-                const priceEl = card.querySelector('[data-test-id="price-current-price"], .product-price, [class*="currentPrice"]');
-                const originalPriceEl = card.querySelector('[data-test-id="price-old-price"], .old-price, [class*="oldPrice"]');
-                const imgEl = card.querySelector('img');
-
-                if (!link) return;
-
                 const href = link.getAttribute('href') || '';
+                const productIdMatch = href.match(/-p-([A-Z0-9]+)/i) || href.match(/\/p-([A-Z0-9]+)/i);
+                if (!productIdMatch) return;
 
-                // Get price from various elements
+                const productId = productIdMatch[1];
+                if (seenIds.has(productId)) return;
+                seenIds.add(productId);
+
+                // Find the card container
+                let card = link.closest('[data-test-id="product-card-item"], [class*="product"], [class*="Product"]') || link.parentElement?.parentElement;
+                if (!card) card = link;
+
+                // Find price
                 let price = 0;
-                if (priceEl) {
-                    const priceText = priceEl.textContent || '';
-                    price = parseFloat(priceText.replace(/[^\d,]/g, '').replace(',', '.'));
+                const priceSelectors = [
+                    '[data-test-id="price-current-price"]', '[class*="currentPrice"]',
+                    '[class*="price"]', '[class*="Price"]', '.price'
+                ];
+
+                for (const sel of priceSelectors) {
+                    const priceEl = card.querySelector(sel);
+                    if (priceEl) {
+                        const priceText = priceEl.textContent || '';
+                        const parsed = parseFloat(priceText.replace(/[^\d,]/g, '').replace(',', '.'));
+                        if (parsed > 0) {
+                            price = parsed;
+                            break;
+                        }
+                    }
                 }
 
-                // Fallback: search for price in card text
-                if (!price || price === 0) {
+                // Fallback: regex
+                if (!price) {
                     const cardText = card.textContent || '';
                     const priceMatch = cardText.match(/(\d{1,3}(?:\.\d{3})*,\d{2})\s*TL/);
                     if (priceMatch) {
@@ -191,24 +247,43 @@ async function parseHepsiburada(page) {
                     }
                 }
 
+                if (!price || price <= 0) return;
+
+                // Find name
+                let name = '';
+                const nameSelectors = [
+                    '[data-test-id="product-card-name"]', '[class*="productName"]',
+                    '[class*="product-title"]', '[class*="name"]', 'h3', 'h2'
+                ];
+                for (const sel of nameSelectors) {
+                    const nameEl = card.querySelector(sel);
+                    if (nameEl && nameEl.textContent?.trim()) {
+                        name = nameEl.textContent.trim();
+                        break;
+                    }
+                }
+                if (!name) name = link.getAttribute('title') || link.textContent?.trim() || 'Unknown';
+
+                // Find image
+                const imgEl = card.querySelector('img');
+                let imageUrl = imgEl?.src || imgEl?.getAttribute('data-src') || null;
+
+                // Original price
                 let originalPrice = null;
-                if (originalPriceEl) {
-                    const origText = originalPriceEl.textContent || '';
-                    originalPrice = parseFloat(origText.replace(/[^\d,]/g, '').replace(',', '.'));
+                const origPriceEl = card.querySelector('[data-test-id="price-old-price"], [class*="oldPrice"], [class*="old-price"]');
+                if (origPriceEl) {
+                    const parsed = parseFloat(origPriceEl.textContent?.replace(/[^\d,]/g, '').replace(',', '.') || '0');
+                    if (parsed > price) originalPrice = parsed;
                 }
 
-                const productIdMatch = href.match(/-p-([A-Z0-9]+)/i);
-                const productId = productIdMatch ? productIdMatch[1] : Math.random().toString(36).slice(2);
-
-                if (price && price > 0) {
-                    products.push({
-                        name: nameEl?.textContent?.trim() || 'Unknown',
-                        price,
-                        originalPrice: originalPrice > price ? originalPrice : null,
-                        imageUrl: imgEl?.src || imgEl?.getAttribute('data-src') || null,
-                        productUrl: href.startsWith('http') ? href : 'https://www.hepsiburada.com' + href,
-                        productId: 'hb-' + productId,
-                        store: 'Hepsiburada'
+                products.push({
+                    name: name.substring(0, 200),
+                    price,
+                    originalPrice,
+                    imageUrl,
+                    productUrl: href.startsWith('http') ? href : 'https://www.hepsiburada.com' + href,
+                    productId: 'hb-' + productId,
+                    store: 'Hepsiburada'
                     });
                 }
             } catch (e) {}
@@ -623,28 +698,54 @@ async function scrapeStore(store, query) {
             await page.waitForTimeout(randomDelay(1000, 2000));
 
             // Wait for products to load
+            let selectorFound = false;
             try {
                 await page.waitForSelector(config.waitSelector, { timeout: 20000 });
+                selectorFound = true;
             } catch (e) {
-                console.log(`${store}: Selector not found, trying to parse anyway`);
+                console.log(`${store}: Primary selector not found`);
             }
 
             // Additional wait for JS rendering
-            await page.waitForTimeout(randomDelay(1500, 2500));
+            await page.waitForTimeout(randomDelay(2000, 3000));
 
             // Scroll to trigger lazy loading - more human-like
             await page.evaluate(() => {
                 window.scrollTo({ top: document.body.scrollHeight / 3, behavior: 'smooth' });
             });
-            await page.waitForTimeout(randomDelay(800, 1200));
+            await page.waitForTimeout(randomDelay(1000, 1500));
 
             await page.evaluate(() => {
-                window.scrollTo({ top: document.body.scrollHeight / 2, behavior: 'smooth' });
+                window.scrollTo({ top: document.body.scrollHeight * 0.6, behavior: 'smooth' });
             });
-            await page.waitForTimeout(randomDelay(500, 1000));
+            await page.waitForTimeout(randomDelay(800, 1200));
 
             // Parse products
             const parsed = await config.parser(page);
+
+            // Debug: If no products found, log available elements
+            if (parsed.length === 0) {
+                const debugInfo = await page.evaluate(() => {
+                    const body = document.body;
+                    // Check for common product container patterns
+                    const checks = {
+                        'div[class*="product"]': document.querySelectorAll('div[class*="product"]').length,
+                        'div[class*="card"]': document.querySelectorAll('div[class*="card"]').length,
+                        'a[href*="/p-"]': document.querySelectorAll('a[href*="/p-"]').length,
+                        'img': document.querySelectorAll('img').length,
+                        '[class*="price"]': document.querySelectorAll('[class*="price"]').length,
+                        '[class*="prc"]': document.querySelectorAll('[class*="prc"]').length,
+                    };
+                    // Get first few class names containing 'product' or 'card'
+                    const productClasses = Array.from(document.querySelectorAll('[class*="product"], [class*="card"]'))
+                        .slice(0, 5)
+                        .map(el => el.className)
+                        .filter(c => c);
+                    return { checks, productClasses, title: document.title, bodyLength: body.innerHTML.length };
+                });
+                console.log(`${store}: DEBUG - No products found. Page info:`, JSON.stringify(debugInfo));
+            }
+
             products.push(...parsed);
             console.log(`${store}: Found ${parsed.length} products`);
         },
