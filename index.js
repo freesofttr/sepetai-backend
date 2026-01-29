@@ -138,30 +138,37 @@ async function scrapeStore(query, store) {
 }
 
 async function fetchAndCacheSearch(query) {
-    // Scrape all stores in parallel
-    const [
-        trendyolProducts,
-        hepsiburadaProducts,
-        amazonProducts,
-        pttavmProducts,
-        pazaramaProducts,
-        teknosaProducts,
-        vatanProducts,
-        mediamarktProducts,
-        migrosProducts,
-        ciceksepetiProducts
-    ] = await Promise.all([
+    // Scrape stores in batches to avoid ScraperAPI rate limiting (max 3 concurrent)
+    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    // Batch 1: Main e-commerce sites (highest priority)
+    const [trendyolProducts, hepsiburadaProducts, amazonProducts] = await Promise.all([
         scrapeStore(query, 'trendyol'),
         scrapeStore(query, 'hepsiburada'),
-        scrapeStore(query, 'amazon'),
+        scrapeStore(query, 'amazon')
+    ]);
+
+    await delay(300); // Small delay between batches to avoid 429
+
+    // Batch 2: Secondary e-commerce + electronics
+    const [pttavmProducts, pazaramaProducts, teknosaProducts] = await Promise.all([
         scrapeStore(query, 'pttavm'),
         scrapeStore(query, 'pazarama'),
-        scrapeStore(query, 'teknosa'),
-        scrapeStore(query, 'vatan'),
-        scrapeStore(query, 'mediamarkt'),
-        scrapeStore(query, 'migros'),
-        scrapeStore(query, 'ciceksepeti')
+        scrapeStore(query, 'teknosa')
     ]);
+
+    await delay(300);
+
+    // Batch 3: More electronics stores
+    const [vatanProducts, mediamarktProducts] = await Promise.all([
+        scrapeStore(query, 'vatan'),
+        scrapeStore(query, 'mediamarkt')
+    ]);
+
+    // Skip specialized stores (Migros for groceries, CicekSepeti for flowers/gifts)
+    // They rarely have electronics and cause unnecessary API usage
+    const migrosProducts = [];
+    const ciceksepetiProducts = [];
 
     const allProducts = [
         ...trendyolProducts,
@@ -171,12 +178,10 @@ async function fetchAndCacheSearch(query) {
         ...pazaramaProducts,
         ...teknosaProducts,
         ...vatanProducts,
-        ...mediamarktProducts,
-        ...migrosProducts,
-        ...ciceksepetiProducts
+        ...mediamarktProducts
     ];
 
-    console.log(`Total scraped from all stores: ${allProducts.length} (T:${trendyolProducts.length} H:${hepsiburadaProducts.length} A:${amazonProducts.length} P:${pttavmProducts.length} Z:${pazaramaProducts.length} TK:${teknosaProducts.length} V:${vatanProducts.length} MM:${mediamarktProducts.length} M:${migrosProducts.length} CS:${ciceksepetiProducts.length})`);
+    console.log(`Total scraped: ${allProducts.length} (T:${trendyolProducts.length} H:${hepsiburadaProducts.length} A:${amazonProducts.length} P:${pttavmProducts.length} Z:${pazaramaProducts.length} TK:${teknosaProducts.length} V:${vatanProducts.length} MM:${mediamarktProducts.length})`);
 
     // Apply smart filtering
     const filtered = smartFilterProducts(query, allProducts);
