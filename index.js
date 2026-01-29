@@ -91,6 +91,26 @@ async function scrapeStore(query, store) {
         pazarama: {
             url: `https://www.pazarama.com/arama?q=${encodeURIComponent(query)}`,
             parser: parsePazaramaProducts
+        },
+        teknosa: {
+            url: `https://www.teknosa.com/arama/?s=${encodeURIComponent(query)}`,
+            parser: parseTeknosaProducts
+        },
+        vatan: {
+            url: `https://www.vatanbilgisayar.com/arama/${encodeURIComponent(query)}/`,
+            parser: parseVatanProducts
+        },
+        mediamarkt: {
+            url: `https://www.mediamarkt.com.tr/tr/search.html?query=${encodeURIComponent(query)}`,
+            parser: parseMediaMarktProducts
+        },
+        migros: {
+            url: `https://www.migros.com.tr/arama?q=${encodeURIComponent(query)}`,
+            parser: parseMigrosProducts
+        },
+        ciceksepeti: {
+            url: `https://www.ciceksepeti.com/arama?q=${encodeURIComponent(query)}`,
+            parser: parseCicekSepetiProducts
         }
     };
 
@@ -118,13 +138,29 @@ async function scrapeStore(query, store) {
 }
 
 async function fetchAndCacheSearch(query) {
-    // Scrape all stores in parallel (N11 disabled - returns empty HTML via ScraperAPI)
-    const [trendyolProducts, hepsiburadaProducts, amazonProducts, pttavmProducts, pazaramaProducts] = await Promise.all([
+    // Scrape all stores in parallel
+    const [
+        trendyolProducts,
+        hepsiburadaProducts,
+        amazonProducts,
+        pttavmProducts,
+        pazaramaProducts,
+        teknosaProducts,
+        vatanProducts,
+        mediamarktProducts,
+        migrosProducts,
+        ciceksepetiProducts
+    ] = await Promise.all([
         scrapeStore(query, 'trendyol'),
         scrapeStore(query, 'hepsiburada'),
         scrapeStore(query, 'amazon'),
         scrapeStore(query, 'pttavm'),
-        scrapeStore(query, 'pazarama')
+        scrapeStore(query, 'pazarama'),
+        scrapeStore(query, 'teknosa'),
+        scrapeStore(query, 'vatan'),
+        scrapeStore(query, 'mediamarkt'),
+        scrapeStore(query, 'migros'),
+        scrapeStore(query, 'ciceksepeti')
     ]);
 
     const allProducts = [
@@ -132,10 +168,15 @@ async function fetchAndCacheSearch(query) {
         ...hepsiburadaProducts,
         ...amazonProducts,
         ...pttavmProducts,
-        ...pazaramaProducts
+        ...pazaramaProducts,
+        ...teknosaProducts,
+        ...vatanProducts,
+        ...mediamarktProducts,
+        ...migrosProducts,
+        ...ciceksepetiProducts
     ];
 
-    console.log(`Total scraped from all stores: ${allProducts.length} (T:${trendyolProducts.length} H:${hepsiburadaProducts.length} A:${amazonProducts.length} P:${pttavmProducts.length} Z:${pazaramaProducts.length})`);
+    console.log(`Total scraped from all stores: ${allProducts.length} (T:${trendyolProducts.length} H:${hepsiburadaProducts.length} A:${amazonProducts.length} P:${pttavmProducts.length} Z:${pazaramaProducts.length} TK:${teknosaProducts.length} V:${vatanProducts.length} MM:${mediamarktProducts.length} M:${migrosProducts.length} CS:${ciceksepetiProducts.length})`);
 
     // Apply smart filtering
     const filtered = smartFilterProducts(query, allProducts);
@@ -1561,6 +1602,451 @@ function parsePazaramaProducts(html) {
     }
 
     console.log(`Pazarama parsed: ${products.length} products`);
+    return products;
+}
+
+// ==========================================
+// TEKNOSA PARSER
+// ==========================================
+function parseTeknosaProducts(html) {
+    const products = [];
+
+    // Teknosa product cards
+    const productLinkRegex = /href="(\/[^"]*-p-[^"]+)"/gi;
+    const productLinks = [];
+    let linkMatch;
+
+    while ((linkMatch = productLinkRegex.exec(html)) !== null) {
+        const href = linkMatch[1];
+        if (productLinks.some(p => p.href === href)) continue;
+        if (href.includes('/sepet') || href.includes('/uyelik')) continue;
+        productLinks.push({
+            href,
+            position: linkMatch.index
+        });
+    }
+
+    for (let i = 0; i < productLinks.length && products.length < 20; i++) {
+        const link = productLinks[i];
+        const contentStart = Math.max(0, link.position - 1000);
+        const contentEnd = productLinks[i + 1]?.position || contentStart + 8000;
+        const cardContent = html.substring(contentStart, Math.min(contentEnd, contentStart + 8000));
+
+        // Extract name
+        const namePatterns = [
+            /class="[^"]*product[_-]?name[^"]*"[^>]*>([^<]+)/i,
+            /class="[^"]*prd-name[^"]*"[^>]*>([^<]+)/i,
+            /title="([^"]{10,})"/i,
+            /alt="([^"]{10,})"/i
+        ];
+        let name = null;
+        for (const pattern of namePatterns) {
+            const m = cardContent.match(pattern);
+            if (m) { name = m[1].trim(); break; }
+        }
+
+        if (!name && link.href) {
+            const slug = link.href.split('-p-')[0].replace(/^\//, '');
+            name = slug.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        }
+
+        // Extract price
+        let price = null;
+        const pricePatterns = [
+            /class="[^"]*prc[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            /class="[^"]*price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            />([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?)\s*(?:TL|₺)</i
+        ];
+        for (const pattern of pricePatterns) {
+            const m = cardContent.match(pattern);
+            if (m) {
+                price = parseFloat(m[1].replace(/\./g, '').replace(',', '.'));
+                if (price >= 1 && price <= 999999) break;
+                price = null;
+            }
+        }
+
+        // Extract original price
+        let originalPrice = null;
+        const orgPatterns = [
+            /class="[^"]*(?:old|original)[^"]*price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            /<del[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)\s*<\/del>/i
+        ];
+        for (const pattern of orgPatterns) {
+            const m = cardContent.match(pattern);
+            if (m) {
+                const op = parseFloat(m[1].replace(/\./g, '').replace(',', '.'));
+                if (op > 0 && price && op > price) { originalPrice = op; break; }
+            }
+        }
+
+        // Extract image
+        let imageUrl = null;
+        const imgMatch = cardContent.match(/src="(https:\/\/[^"]*teknosa[^"]*\.(?:jpg|png|webp)[^"]*)"/i)
+            || cardContent.match(/data-src="(https:\/\/[^"]*\.(?:jpg|png|webp)[^"]*)"/i);
+        if (imgMatch) imageUrl = imgMatch[1];
+
+        if (!name || !price || price < 1) continue;
+
+        const idMatch = link.href.match(/-p-(\d+)/);
+        const productId = idMatch ? idMatch[1] : link.href.replace(/\//g, '-');
+
+        products.push({
+            name,
+            price,
+            originalPrice,
+            imageUrl,
+            productUrl: 'https://www.teknosa.com' + link.href,
+            productId: 'tek-' + productId,
+            brand: null,
+            seller: null,
+            store: 'Teknosa'
+        });
+    }
+
+    console.log(`Teknosa parsed: ${products.length} products`);
+    return products;
+}
+
+// ==========================================
+// VATAN BILGISAYAR PARSER
+// ==========================================
+function parseVatanProducts(html) {
+    const products = [];
+
+    // Vatan product cards
+    const productLinkRegex = /href="(https:\/\/www\.vatanbilgisayar\.com\/[^"]+)"/gi;
+    const productLinks = [];
+    let linkMatch;
+
+    while ((linkMatch = productLinkRegex.exec(html)) !== null) {
+        const href = linkMatch[1];
+        if (productLinks.some(p => p.href === href)) continue;
+        if (href.includes('/sepet') || href.includes('/kategori') || href.includes('/arama')) continue;
+        productLinks.push({
+            href,
+            position: linkMatch.index
+        });
+    }
+
+    for (let i = 0; i < productLinks.length && products.length < 20; i++) {
+        const link = productLinks[i];
+        const contentStart = Math.max(0, link.position - 1000);
+        const contentEnd = productLinks[i + 1]?.position || contentStart + 8000;
+        const cardContent = html.substring(contentStart, Math.min(contentEnd, contentStart + 8000));
+
+        // Extract name
+        const namePatterns = [
+            /class="[^"]*product-name[^"]*"[^>]*>([^<]+)/i,
+            /class="[^"]*product__name[^"]*"[^>]*>([^<]+)/i,
+            /title="([^"]{10,})"/i
+        ];
+        let name = null;
+        for (const pattern of namePatterns) {
+            const m = cardContent.match(pattern);
+            if (m) { name = m[1].trim(); break; }
+        }
+
+        if (!name) {
+            const slug = link.href.replace('https://www.vatanbilgisayar.com/', '').split('/')[0];
+            if (slug && slug.length > 5) {
+                name = slug.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+            }
+        }
+
+        // Extract price
+        let price = null;
+        const pricePatterns = [
+            /class="[^"]*product-price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            /class="[^"]*price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            />([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?)\s*(?:TL|₺)</i
+        ];
+        for (const pattern of pricePatterns) {
+            const m = cardContent.match(pattern);
+            if (m) {
+                price = parseFloat(m[1].replace(/\./g, '').replace(',', '.'));
+                if (price >= 1 && price <= 999999) break;
+                price = null;
+            }
+        }
+
+        // Extract original price
+        let originalPrice = null;
+        const orgPatterns = [
+            /class="[^"]*(?:old|original)[^"]*price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            /<del[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)\s*<\/del>/i
+        ];
+        for (const pattern of orgPatterns) {
+            const m = cardContent.match(pattern);
+            if (m) {
+                const op = parseFloat(m[1].replace(/\./g, '').replace(',', '.'));
+                if (op > 0 && price && op > price) { originalPrice = op; break; }
+            }
+        }
+
+        // Extract image
+        let imageUrl = null;
+        const imgMatch = cardContent.match(/src="(https:\/\/[^"]*vatanbilgisayar[^"]*\.(?:jpg|png|webp)[^"]*)"/i)
+            || cardContent.match(/data-src="(https:\/\/[^"]*\.(?:jpg|png|webp)[^"]*)"/i);
+        if (imgMatch) imageUrl = imgMatch[1];
+
+        if (!name || !price || price < 1) continue;
+
+        // Generate product ID from URL
+        const urlParts = link.href.split('/');
+        const productId = urlParts[urlParts.length - 1] || urlParts[urlParts.length - 2] || Math.random().toString(36).slice(2, 10);
+
+        products.push({
+            name,
+            price,
+            originalPrice,
+            imageUrl,
+            productUrl: link.href,
+            productId: 'vat-' + productId,
+            brand: null,
+            seller: null,
+            store: 'Vatan'
+        });
+    }
+
+    console.log(`Vatan parsed: ${products.length} products`);
+    return products;
+}
+
+// ==========================================
+// MEDIAMARKT PARSER
+// ==========================================
+function parseMediaMarktProducts(html) {
+    const products = [];
+
+    // MediaMarkt product cards
+    const productLinkRegex = /href="(\/tr\/product\/[^"]+)"/gi;
+    const productLinks = [];
+    let linkMatch;
+
+    while ((linkMatch = productLinkRegex.exec(html)) !== null) {
+        const href = linkMatch[1];
+        if (productLinks.some(p => p.href === href)) continue;
+        productLinks.push({
+            href,
+            position: linkMatch.index
+        });
+    }
+
+    for (let i = 0; i < productLinks.length && products.length < 20; i++) {
+        const link = productLinks[i];
+        const contentStart = Math.max(0, link.position - 1000);
+        const contentEnd = productLinks[i + 1]?.position || contentStart + 8000;
+        const cardContent = html.substring(contentStart, Math.min(contentEnd, contentStart + 8000));
+
+        // Extract name
+        const namePatterns = [
+            /class="[^"]*product-title[^"]*"[^>]*>([^<]+)/i,
+            /class="[^"]*product-name[^"]*"[^>]*>([^<]+)/i,
+            /title="([^"]{10,})"/i
+        ];
+        let name = null;
+        for (const pattern of namePatterns) {
+            const m = cardContent.match(pattern);
+            if (m) { name = m[1].trim(); break; }
+        }
+
+        // Extract price
+        let price = null;
+        const pricePatterns = [
+            /class="[^"]*price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            />([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?)\s*(?:TL|₺)</i
+        ];
+        for (const pattern of pricePatterns) {
+            const m = cardContent.match(pattern);
+            if (m) {
+                price = parseFloat(m[1].replace(/\./g, '').replace(',', '.'));
+                if (price >= 1 && price <= 999999) break;
+                price = null;
+            }
+        }
+
+        // Extract image
+        let imageUrl = null;
+        const imgMatch = cardContent.match(/src="(https:\/\/[^"]*mediamarkt[^"]*\.(?:jpg|png|webp)[^"]*)"/i)
+            || cardContent.match(/data-src="(https:\/\/[^"]*\.(?:jpg|png|webp)[^"]*)"/i);
+        if (imgMatch) imageUrl = imgMatch[1];
+
+        if (!name || !price || price < 1) continue;
+
+        // Extract product ID from URL
+        const idMatch = link.href.match(/(\d+)\.html/);
+        const productId = idMatch ? idMatch[1] : Math.random().toString(36).slice(2, 10);
+
+        products.push({
+            name,
+            price,
+            originalPrice: null,
+            imageUrl,
+            productUrl: 'https://www.mediamarkt.com.tr' + link.href,
+            productId: 'mm-' + productId,
+            brand: null,
+            seller: null,
+            store: 'MediaMarkt'
+        });
+    }
+
+    console.log(`MediaMarkt parsed: ${products.length} products`);
+    return products;
+}
+
+// ==========================================
+// MIGROS PARSER
+// ==========================================
+function parseMigrosProducts(html) {
+    const products = [];
+
+    // Migros uses JSON data in the page
+    try {
+        const jsonMatch = html.match(/"products"\s*:\s*(\[[\s\S]*?\])\s*,\s*"(?:pagination|facets|total)"/i);
+        if (jsonMatch) {
+            const productsData = JSON.parse(jsonMatch[1]);
+            for (const item of productsData.slice(0, 20)) {
+                if (item.name && item.shownPrice) {
+                    products.push({
+                        name: item.name,
+                        price: parseFloat(item.shownPrice),
+                        originalPrice: item.regularPrice ? parseFloat(item.regularPrice) : null,
+                        imageUrl: item.images?.[0]?.urls?.PRODUCT_LIST || item.images?.[0]?.url || null,
+                        productUrl: `https://www.migros.com.tr${item.productUrl || item.url || ''}`,
+                        productId: 'mig-' + (item.sku || item.productId || Math.random().toString(36).slice(2, 10)),
+                        brand: item.brand || null,
+                        seller: null,
+                        store: 'Migros'
+                    });
+                }
+            }
+        }
+    } catch (e) {
+        // Fallback to HTML parsing
+    }
+
+    // Fallback HTML parsing
+    if (products.length === 0) {
+        const productLinkRegex = /href="(\/[^"]*-p-[^"]+)"/gi;
+        const productLinks = [];
+        let linkMatch;
+
+        while ((linkMatch = productLinkRegex.exec(html)) !== null) {
+            const href = linkMatch[1];
+            if (productLinks.some(p => p.href === href)) continue;
+            productLinks.push({ href, position: linkMatch.index });
+        }
+
+        for (let i = 0; i < productLinks.length && products.length < 20; i++) {
+            const link = productLinks[i];
+            const contentStart = Math.max(0, link.position - 1000);
+            const contentEnd = productLinks[i + 1]?.position || contentStart + 8000;
+            const cardContent = html.substring(contentStart, Math.min(contentEnd, contentStart + 8000));
+
+            const nameMatch = cardContent.match(/class="[^"]*product-name[^"]*"[^>]*>([^<]+)/i);
+            const priceMatch = cardContent.match(/>([0-9.,]+)\s*(?:TL|₺)</i);
+
+            if (nameMatch && priceMatch) {
+                const price = parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.'));
+                if (price >= 1) {
+                    products.push({
+                        name: nameMatch[1].trim(),
+                        price,
+                        originalPrice: null,
+                        imageUrl: null,
+                        productUrl: 'https://www.migros.com.tr' + link.href,
+                        productId: 'mig-' + Math.random().toString(36).slice(2, 10),
+                        brand: null,
+                        seller: null,
+                        store: 'Migros'
+                    });
+                }
+            }
+        }
+    }
+
+    console.log(`Migros parsed: ${products.length} products`);
+    return products;
+}
+
+// ==========================================
+// CICEKSEPETI PARSER
+// ==========================================
+function parseCicekSepetiProducts(html) {
+    const products = [];
+
+    // CicekSepeti product links
+    const productLinkRegex = /href="(\/[^"]*-[a-z]{2,4}\d+)"/gi;
+    const productLinks = [];
+    let linkMatch;
+
+    while ((linkMatch = productLinkRegex.exec(html)) !== null) {
+        const href = linkMatch[1];
+        if (productLinks.some(p => p.href === href)) continue;
+        if (href.includes('/kampanya') || href.includes('/kategori')) continue;
+        productLinks.push({ href, position: linkMatch.index });
+    }
+
+    for (let i = 0; i < productLinks.length && products.length < 20; i++) {
+        const link = productLinks[i];
+        const contentStart = Math.max(0, link.position - 1000);
+        const contentEnd = productLinks[i + 1]?.position || contentStart + 8000;
+        const cardContent = html.substring(contentStart, Math.min(contentEnd, contentStart + 8000));
+
+        // Extract name
+        const namePatterns = [
+            /class="[^"]*product[_-]?name[^"]*"[^>]*>([^<]+)/i,
+            /title="([^"]{10,})"/i,
+            /alt="([^"]{10,})"/i
+        ];
+        let name = null;
+        for (const pattern of namePatterns) {
+            const m = cardContent.match(pattern);
+            if (m) { name = m[1].trim(); break; }
+        }
+
+        // Extract price
+        let price = null;
+        const pricePatterns = [
+            /class="[^"]*price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            />([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?)\s*(?:TL|₺)</i
+        ];
+        for (const pattern of pricePatterns) {
+            const m = cardContent.match(pattern);
+            if (m) {
+                price = parseFloat(m[1].replace(/\./g, '').replace(',', '.'));
+                if (price >= 1 && price <= 999999) break;
+                price = null;
+            }
+        }
+
+        // Extract image
+        let imageUrl = null;
+        const imgMatch = cardContent.match(/src="(https:\/\/[^"]*ciceksepeti[^"]*\.(?:jpg|png|webp)[^"]*)"/i)
+            || cardContent.match(/data-src="(https:\/\/[^"]*\.(?:jpg|png|webp)[^"]*)"/i);
+        if (imgMatch) imageUrl = imgMatch[1];
+
+        if (!name || !price || price < 1) continue;
+
+        // Extract product ID from URL
+        const idMatch = link.href.match(/([a-z]{2,4}\d+)$/i);
+        const productId = idMatch ? idMatch[1] : Math.random().toString(36).slice(2, 10);
+
+        products.push({
+            name,
+            price,
+            originalPrice: null,
+            imageUrl,
+            productUrl: 'https://www.ciceksepeti.com' + link.href,
+            productId: 'cs-' + productId,
+            brand: null,
+            seller: null,
+            store: 'CicekSepeti'
+        });
+    }
+
+    console.log(`CicekSepeti parsed: ${products.length} products`);
     return products;
 }
 
