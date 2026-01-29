@@ -643,7 +643,7 @@ app.get('/api/search/all', async (req, res) => {
 const PRODUCT_CATEGORIES = {
     phone: {
         keywords: ['iphone', 'samsung galaxy', 'telefon', 'cep telefon', 'xiaomi', 'huawei', 'pixel', 'oppo', 'realme', 'oneplus', 'redmi', 'poco', 'iphone 15', 'iphone 14', 'iphone 16', 'galaxy s', 'galaxy a'],
-        excludeKeywords: ['kılıf', 'kilif', 'cam', 'ekran koruyucu', 'şarj', 'sarj', 'adaptör', 'adaptor', 'kablo', 'kordon', 'powerbank', 'tutucu', 'stand', 'temizleyici', 'sticker', 'çıkartma', 'cikartma', 'aksesuar', 'batarya', 'pil', 'lens', 'kapak', 'arka kapak', 'koruma', 'pencere', 'cam filmi', 'jelatin', 'tampon', 'bumper', 'cüzdan', 'cuzdan'],
+        excludeKeywords: ['kılıf', 'kilif', 'cam', 'ekran koruyucu', 'şarj', 'sarj', 'adaptör', 'adaptor', 'kablo', 'kordon', 'powerbank', 'tutucu', 'stand', 'temizleyici', 'sticker', 'çıkartma', 'cikartma', 'aksesuar', 'batarya', 'pil', 'lens', 'kapak', 'arka kapak', 'koruma', 'pencere', 'cam filmi', 'jelatin', 'tampon', 'bumper', 'cüzdan', 'cuzdan', 'uyumlu', 'için', 'icin', 'silikon', 'epoksi', 'epoksili', 'magsafe', 'şeffaf', 'seffaf', 'mat', 'glitter', 'zırh', 'zirh'],
         intentLabel: 'Telefon',
         mainProductIndicators: ['gb', 'tb', '128', '256', '512', '1tb', 'pro', 'pro max', 'ultra', 'plus', 'lite', 'note']
     },
@@ -705,7 +705,12 @@ const ACCESSORY_PATTERNS = [
     'aksesuar', 'yedek', 'bağcık', 'bagcik', 'tabanlık', 'tabanlik',
     'bakım', 'bakim', 'fırça', 'firca', 'sprey', 'aparatı', 'aparati',
     'askı', 'aski', 'kumanda', 'mouse pad', 'mousepad', 'jelatin', 'film',
-    'broş', 'bros'
+    'broş', 'bros',
+    // Additional accessory indicators
+    'uyumlu', 'için', 'icin', 'compatible', 'case', 'cover', 'silikon', 'silicon',
+    'epoksi', 'epoksili', 'magsafe', 'wireless charger', 'kablosuz şarj',
+    'köşe koruma', 'kose koruma', 'darbe', 'zırh', 'zirh', 'armor',
+    'şeffaf', 'seffaf', 'transparent', 'clear', 'mat', 'parlak', 'glitter'
 ];
 
 // Turkish character normalization for matching
@@ -776,7 +781,17 @@ function matchesSpecificModel(productName, modelQuery) {
     // Sub-model variants that should be treated as separate products
     const subModelVariants = ['pro max', 'pro', 'plus', 'mini', 'ultra', 'fe', 'lite'];
 
+    // ACCESSORY INDICATORS: Products with these words are accessories, not the actual product
+    const accessoryIndicators = ['uyumlu', 'icin', 'için', 'compatible', 'case', 'cover', 'kilif', 'kılıf'];
+    const isAccessoryByName = accessoryIndicators.some(ind => nameNorm.includes(ind));
+
     if (modelQuery.brand === 'iphone') {
+        // If product mentions multiple models like "13/14/15" or "13 14 15", it's an accessory
+        const multiModelPattern = /iphone\s*\d{1,2}\s*[\/,\s]+\d{1,2}|iphone\s*\d{1,2}\s+(?:ve\s+)?\d{1,2}/i;
+        if (multiModelPattern.test(nameNorm)) {
+            return false; // This is an accessory that fits multiple models
+        }
+
         // Extract model number from product name
         const nameModelMatch = nameNorm.match(/iphone\s*(\d{1,2})/);
         if (!nameModelMatch) return false;
@@ -786,6 +801,9 @@ function matchesSpecificModel(productName, modelQuery) {
 
         // Model number must match exactly
         if (nameModelMatch[1] !== queryModelNum[1]) return false;
+
+        // If name has accessory indicators, reject it
+        if (isAccessoryByName) return false;
 
         // Check sub-model (pro max, pro, plus, mini, e)
         const querySubModel = modelQuery.model.replace(/\d+\s*/, '').trim().toLowerCase();
@@ -814,6 +832,12 @@ function matchesSpecificModel(productName, modelQuery) {
     }
 
     if (modelQuery.brand === 'galaxy') {
+        // If product mentions multiple models, it's an accessory
+        const multiModelPattern = /galaxy\s*[a-z]?\d{1,2}\s*[\/,\s]+[a-z]?\d{1,2}/i;
+        if (multiModelPattern.test(nameNorm)) {
+            return false;
+        }
+
         const nameModelMatch = nameNorm.match(/galaxy\s*([a-z]?\d{1,2})/);
         if (!nameModelMatch) return false;
 
@@ -821,6 +845,9 @@ function matchesSpecificModel(productName, modelQuery) {
         if (!queryModelPart) return true;
 
         if (nameModelMatch[1] !== queryModelPart[1]) return false;
+
+        // If name has accessory indicators, reject it
+        if (isAccessoryByName) return false;
 
         const querySubModel = modelQuery.model.replace(/[a-z]?\d+\s*/, '').trim().toLowerCase();
         const productSubModel = subModelVariants.find(variant => nameNorm.includes(variant));
@@ -840,6 +867,9 @@ function matchesSpecificModel(productName, modelQuery) {
     }
 
     // Generic brand+model: just check that all model words appear in product name
+    // But reject if it has accessory indicators
+    if (isAccessoryByName) return false;
+
     const modelWords = modelQuery.model.split(/\s+/);
     return modelWords.every(word => nameNorm.includes(word));
 }
