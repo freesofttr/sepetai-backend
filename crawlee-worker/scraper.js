@@ -241,7 +241,8 @@ function randomDelay(min = 300, max = 800) {
 // Store configurations with multiple fallback selectors
 const STORE_CONFIGS = {
     trendyol: {
-        searchUrl: (q) => `https://www.trendyol.com/sr?q=${encodeURIComponent(q)}`,
+        // Sort by price descending to get actual products (phones) before accessories (cases)
+        searchUrl: (q) => `https://www.trendyol.com/sr?q=${encodeURIComponent(q)}&sst=PRICE_BY_DESC`,
         waitSelector: '.p-card-wrppr, .product-card, [class*="product"]',
         parser: parseTrendyol
     },

@@ -1075,37 +1075,8 @@ function smartFilterProducts(query, products) {
     });
 
     // Filter: relevant products, sorted by price (cheapest first)
-    let relevant = analyzed
+    const relevant = analyzed
         .filter(p => p.isRelevant)
-        .sort((a, b) => a.price - b.price);
-
-    // SAFEGUARD: If a store had products but ALL were filtered out, include cheapest ones
-    // This prevents losing entire stores due to overly strict filtering
-    const originalByStore = {};
-    const relevantByStore = {};
-    analyzed.forEach(p => {
-        originalByStore[p.store] = (originalByStore[p.store] || 0) + 1;
-    });
-    relevant.forEach(p => {
-        relevantByStore[p.store] = (relevantByStore[p.store] || 0) + 1;
-    });
-
-    for (const [store, originalCount] of Object.entries(originalByStore)) {
-        const relevantCount = relevantByStore[store] || 0;
-        if (originalCount > 0 && relevantCount === 0) {
-            // This store lost ALL products - include top 10 cheapest
-            console.log(`SAFEGUARD: ${store} lost all ${originalCount} products, adding cheapest 10`);
-            const storeProducts = analyzed
-                .filter(p => p.store === store)
-                .sort((a, b) => a.price - b.price)
-                .slice(0, 10)
-                .map(p => ({ ...p, classification: 'Fiyat Karşılaştırma', isRelevant: true }));
-            relevant = [...relevant, ...storeProducts];
-        }
-    }
-
-    // Sort again and remove internal fields
-    relevant = relevant
         .sort((a, b) => a.price - b.price)
         .map(p => {
             const { _queryRelevance, ...rest } = p;
