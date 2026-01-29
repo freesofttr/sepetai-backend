@@ -614,8 +614,12 @@ function detectModelQuery(query) {
 }
 
 // Check if product name matches the specific model from query
+// STRICT MATCHING: "iPhone 15" shows only base model, not Pro/Plus variants
 function matchesSpecificModel(productName, modelQuery) {
     const nameNorm = normalizeTurkish(productName.toLowerCase());
+
+    // Sub-model variants that should be treated as separate products
+    const subModelVariants = ['pro max', 'pro', 'plus', 'mini', 'ultra', 'fe', 'lite'];
 
     if (modelQuery.brand === 'iphone') {
         // Extract model number from product name
@@ -629,12 +633,29 @@ function matchesSpecificModel(productName, modelQuery) {
         if (nameModelMatch[1] !== queryModelNum[1]) return false;
 
         // Check sub-model (pro max, pro, plus, mini, e)
-        const querySubModel = modelQuery.model.replace(/\d+\s*/, '').trim();
+        const querySubModel = modelQuery.model.replace(/\d+\s*/, '').trim().toLowerCase();
+
+        // Detect if product name has a sub-model variant
+        const productSubModel = subModelVariants.find(variant => nameNorm.includes(variant));
+
         if (querySubModel) {
-            // Query specifies sub-model - product must contain it
+            // Query specifies sub-model (e.g., "iPhone 15 Pro")
+            if (querySubModel === 'pro max') {
+                return nameNorm.includes('pro max');
+            }
+            if (querySubModel === 'pro') {
+                // "iPhone 15 Pro" should match Pro but NOT Pro Max
+                return nameNorm.includes('pro') && !nameNorm.includes('pro max');
+            }
             return nameNorm.includes(querySubModel);
+        } else {
+            // No sub-model in query (e.g., just "iPhone 15")
+            // EXCLUDE products with sub-model variants
+            if (productSubModel) {
+                return false; // Exclude "iPhone 15 Pro", "iPhone 15 Plus", etc.
+            }
+            return true; // Keep base model "iPhone 15"
         }
-        return true; // No sub-model filter, any variant of this number is fine
     }
 
     if (modelQuery.brand === 'galaxy') {
@@ -646,11 +667,21 @@ function matchesSpecificModel(productName, modelQuery) {
 
         if (nameModelMatch[1] !== queryModelPart[1]) return false;
 
-        const querySubModel = modelQuery.model.replace(/[a-z]?\d+\s*/, '').trim();
+        const querySubModel = modelQuery.model.replace(/[a-z]?\d+\s*/, '').trim().toLowerCase();
+        const productSubModel = subModelVariants.find(variant => nameNorm.includes(variant));
+
         if (querySubModel) {
+            if (querySubModel === 'ultra') {
+                return nameNorm.includes('ultra');
+            }
             return nameNorm.includes(querySubModel);
+        } else {
+            // No sub-model - exclude Ultra, Plus, FE variants
+            if (productSubModel) {
+                return false;
+            }
+            return true;
         }
-        return true;
     }
 
     // Generic brand+model: just check that all model words appear in product name
