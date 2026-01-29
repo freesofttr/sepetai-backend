@@ -3,7 +3,28 @@
  * Tüm mağazalar için gerçek browser ile scraping
  */
 
-const { PlaywrightCrawler, Dataset, purgeDefaultStorages } = require('crawlee');
+const { PlaywrightCrawler, Configuration, purgeDefaultStorages } = require('crawlee');
+const path = require('path');
+const fs = require('fs');
+
+// Create unique storage path for this process to avoid conflicts
+const UNIQUE_ID = `${process.pid}-${Date.now()}`;
+const STORAGE_DIR = process.env.CRAWLEE_STORAGE_DIR || path.join(__dirname, 'storage');
+const UNIQUE_STORAGE_DIR = path.join(STORAGE_DIR, UNIQUE_ID);
+
+// Ensure storage directories exist
+try {
+    fs.mkdirSync(path.join(UNIQUE_STORAGE_DIR, 'request_queues'), { recursive: true });
+    fs.mkdirSync(path.join(UNIQUE_STORAGE_DIR, 'key_value_stores'), { recursive: true });
+    fs.mkdirSync(path.join(UNIQUE_STORAGE_DIR, 'datasets'), { recursive: true });
+} catch (e) {
+    console.log('Storage dirs may already exist');
+}
+
+// Configure Crawlee to use unique storage
+Configuration.getGlobalConfig().set('storageClientOptions', {
+    localDataDirectory: UNIQUE_STORAGE_DIR
+});
 
 // Store configurations
 const STORE_CONFIGS = {
@@ -520,6 +541,17 @@ async function scrapeStore(store, query) {
 // Export for use in main backend
 module.exports = { scrapeStore, STORE_CONFIGS };
 
+// Cleanup function to remove unique storage directory
+async function cleanup() {
+    try {
+        await purgeDefaultStorages();
+        // Remove unique storage directory
+        fs.rmSync(UNIQUE_STORAGE_DIR, { recursive: true, force: true });
+    } catch (e) {
+        // Ignore cleanup errors
+    }
+}
+
 // CLI mode - run directly
 if (require.main === module) {
     const store = process.argv[2];
@@ -542,10 +574,11 @@ if (require.main === module) {
             console.log('RESULT_END');
 
             // Cleanup
-            await purgeDefaultStorages();
+            await cleanup();
             process.exit(0);
         } catch (e) {
             console.error('Scraper error:', e.message);
+            await cleanup();
             process.exit(1);
         }
     })();

@@ -89,7 +89,9 @@ async function scrapeStore(query, store) {
             env: {
                 ...process.env,
                 CRAWLEE_STORAGE_DIR: path.join(CRAWLEE_WORKER_PATH, 'storage'),
-                PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH || undefined
+                PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH || '/ms-playwright',
+                PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1',
+                HOME: process.env.HOME || '/root'
             },
             timeout: 90000 // 90 second timeout
         });
