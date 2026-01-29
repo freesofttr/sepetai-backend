@@ -544,8 +544,6 @@ async function scrapeStore(store, query) {
         maxRequestRetries: 2,
         requestHandlerTimeoutSecs: 50,
         navigationTimeoutSecs: 35,
-        // Disable automatic status code checking - we'll handle it ourselves
-        additionalMimeTypes: ['text/html'],
         launchContext: {
             launchOptions: {
                 headless: true,
