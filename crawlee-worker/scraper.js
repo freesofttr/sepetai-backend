@@ -26,17 +26,174 @@ Configuration.getGlobalConfig().set('storageClientOptions', {
     localDataDirectory: UNIQUE_STORAGE_DIR
 });
 
-// Anti-detection: Realistic user agents
+// Anti-detection: Realistic user agents (Chrome 122-125 - latest versions)
 const USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0'
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
+];
+
+// Screen resolutions for fingerprinting
+const SCREEN_CONFIGS = [
+    { width: 1920, height: 1080 },
+    { width: 1366, height: 768 },
+    { width: 1536, height: 864 },
+    { width: 1440, height: 900 },
+    { width: 1280, height: 720 }
 ];
 
 function getRandomUserAgent() {
     return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
+
+function getRandomScreen() {
+    return SCREEN_CONFIGS[Math.floor(Math.random() * SCREEN_CONFIGS.length)];
+}
+
+// COMPREHENSIVE STEALTH SCRIPT - Bypasses most bot detection
+const STEALTH_SCRIPT = `
+// 1. Remove webdriver flag
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+delete navigator.__proto__.webdriver;
+
+// 2. Mock plugins (realistic Chrome plugins)
+Object.defineProperty(navigator, 'plugins', {
+    get: () => {
+        const plugins = [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
+        ];
+        plugins.item = (i) => plugins[i];
+        plugins.namedItem = (name) => plugins.find(p => p.name === name);
+        plugins.refresh = () => {};
+        return plugins;
+    }
+});
+
+// 3. Mock mimeTypes
+Object.defineProperty(navigator, 'mimeTypes', {
+    get: () => {
+        const mimeTypes = [
+            { type: 'application/pdf', suffixes: 'pdf', description: '', enabledPlugin: navigator.plugins[0] },
+            { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format', enabledPlugin: navigator.plugins[0] }
+        ];
+        mimeTypes.item = (i) => mimeTypes[i];
+        mimeTypes.namedItem = (name) => mimeTypes.find(m => m.type === name);
+        return mimeTypes;
+    }
+});
+
+// 4. Chrome object
+window.chrome = {
+    runtime: {
+        connect: () => {},
+        sendMessage: () => {},
+        onMessage: { addListener: () => {} }
+    },
+    loadTimes: () => ({
+        commitLoadTime: Date.now() / 1000 - 2,
+        connectionInfo: 'http/1.1',
+        finishDocumentLoadTime: Date.now() / 1000 - 0.5,
+        finishLoadTime: Date.now() / 1000 - 0.2,
+        firstPaintAfterLoadTime: 0,
+        firstPaintTime: Date.now() / 1000 - 1.5,
+        navigationType: 'Other',
+        npnNegotiatedProtocol: 'unknown',
+        requestTime: Date.now() / 1000 - 3,
+        startLoadTime: Date.now() / 1000 - 2.5,
+        wasAlternateProtocolAvailable: false,
+        wasFetchedViaSpdy: false,
+        wasNpnNegotiated: false
+    }),
+    csi: () => ({ pageT: Date.now(), startE: Date.now() - 3000, onloadT: Date.now() - 1000 }),
+    app: { isInstalled: false, InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' }, RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' } }
+};
+
+// 5. Languages
+Object.defineProperty(navigator, 'languages', { get: () => ['tr-TR', 'tr', 'en-US', 'en'] });
+Object.defineProperty(navigator, 'language', { get: () => 'tr-TR' });
+
+// 6. Hardware concurrency (realistic values)
+Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => [4, 8, 12, 16][Math.floor(Math.random() * 4)] });
+
+// 7. Device memory
+Object.defineProperty(navigator, 'deviceMemory', { get: () => [4, 8, 16][Math.floor(Math.random() * 3)] });
+
+// 8. Platform
+Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+
+// 9. Permissions API
+const originalQuery = window.navigator.permissions?.query?.bind(window.navigator.permissions);
+if (originalQuery) {
+    window.navigator.permissions.query = (parameters) => {
+        if (parameters.name === 'notifications') {
+            return Promise.resolve({ state: 'prompt', onchange: null });
+        }
+        return originalQuery(parameters);
+    };
+}
+
+// 10. WebGL Vendor/Renderer (realistic values)
+const getParameterProxyHandler = {
+    apply: function(target, thisArg, args) {
+        const param = args[0];
+        const gl = thisArg;
+        if (param === 37445) return 'Google Inc. (Intel)'; // UNMASKED_VENDOR_WEBGL
+        if (param === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)'; // UNMASKED_RENDERER_WEBGL
+        return Reflect.apply(target, thisArg, args);
+    }
+};
+try {
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+    if (gl) {
+        const origGetParameter = gl.getParameter.bind(gl);
+        gl.getParameter = new Proxy(origGetParameter, getParameterProxyHandler);
+        WebGLRenderingContext.prototype.getParameter = new Proxy(
+            WebGLRenderingContext.prototype.getParameter,
+            getParameterProxyHandler
+        );
+    }
+} catch (e) {}
+
+// 11. Canvas fingerprint randomization
+const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+HTMLCanvasElement.prototype.toDataURL = function(type) {
+    if (this.width === 0 || this.height === 0) return originalToDataURL.apply(this, arguments);
+    const ctx = this.getContext('2d');
+    if (ctx) {
+        const imageData = ctx.getImageData(0, 0, Math.min(this.width, 10), Math.min(this.height, 10));
+        for (let i = 0; i < imageData.data.length; i += 4) {
+            imageData.data[i] = imageData.data[i] ^ (Math.random() > 0.5 ? 1 : 0);
+        }
+        ctx.putImageData(imageData, 0, 0);
+    }
+    return originalToDataURL.apply(this, arguments);
+};
+
+// 12. Disable automation flags
+Object.defineProperty(document, 'hidden', { get: () => false });
+Object.defineProperty(document, 'visibilityState', { get: () => 'visible' });
+
+// 13. Console.debug trap (some sites use this)
+const originalDebug = console.debug;
+console.debug = function() {
+    if (arguments[0]?.includes?.('automation') || arguments[0]?.includes?.('webdriver')) return;
+    return originalDebug.apply(this, arguments);
+};
+
+// 14. Notification permission
+Object.defineProperty(Notification, 'permission', { get: () => 'default' });
+
+// 15. Connection type
+if (navigator.connection) {
+    Object.defineProperty(navigator.connection, 'rtt', { get: () => 50 + Math.floor(Math.random() * 100) });
+}
+`;
 
 // Random delay helper - reduced for speed
 function randomDelay(min = 300, max = 800) {
@@ -612,12 +769,16 @@ async function scrapeStore(store, query) {
 
     const products = [];
     const userAgent = getRandomUserAgent();
+    const screen = getRandomScreen();
+
+    // Extract Chrome version from user agent for headers
+    const chromeVersion = userAgent.match(/Chrome\/(\d+)/)?.[1] || '125';
 
     const crawler = new PlaywrightCrawler({
         maxConcurrency: 1,
-        maxRequestRetries: 1,  // Reduced from 2 for speed
-        requestHandlerTimeoutSecs: 25,  // Reduced from 50
-        navigationTimeoutSecs: 15,  // Reduced from 35
+        maxRequestRetries: 2,
+        requestHandlerTimeoutSecs: 40,
+        navigationTimeoutSecs: 25,
         launchContext: {
             launchOptions: {
                 headless: true,
@@ -626,9 +787,26 @@ async function scrapeStore(store, query) {
                     '--no-sandbox',
                     '--disable-gpu',
                     '--disable-setuid-sandbox',
+                    // Anti-detection args
                     '--disable-blink-features=AutomationControlled',
+                    '--disable-features=IsolateOrigins,site-per-process',
                     '--disable-infobars',
-                    '--window-size=1920,1080'
+                    '--disable-background-networking',
+                    '--disable-breakpad',
+                    '--disable-component-update',
+                    '--disable-domain-reliability',
+                    '--disable-sync',
+                    '--metrics-recording-only',
+                    '--no-first-run',
+                    '--password-store=basic',
+                    '--use-mock-keychain',
+                    '--ignore-certificate-errors',
+                    '--ignore-certificate-errors-spki-list',
+                    `--window-size=${screen.width},${screen.height}`,
+                    '--start-maximized',
+                    // Timezone
+                    '--lang=tr-TR',
+                    '--accept-lang=tr-TR,tr,en-US,en'
                 ]
             }
         },
@@ -642,82 +820,90 @@ async function scrapeStore(store, query) {
         },
         preNavigationHooks: [
             async ({ page }) => {
-                // Set realistic viewport
-                await page.setViewportSize({ width: 1920, height: 1080 });
+                // Set realistic viewport with device scale factor
+                await page.setViewportSize({
+                    width: screen.width,
+                    height: screen.height
+                });
 
-                // Set user agent
+                // Inject comprehensive stealth script BEFORE page loads
+                await page.addInitScript(STEALTH_SCRIPT);
+
+                // Set extra HTTP headers
                 await page.setExtraHTTPHeaders({
-                    'User-Agent': userAgent,
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
                     'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
                     'Accept-Encoding': 'gzip, deflate, br',
-                    'Cache-Control': 'no-cache',
-                    'Pragma': 'no-cache',
-                    'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                    'Cache-Control': 'max-age=0',
+                    'Sec-Ch-Ua': `"Chromium";v="${chromeVersion}", "Google Chrome";v="${chromeVersion}", "Not-A.Brand";v="99"`,
                     'Sec-Ch-Ua-Mobile': '?0',
                     'Sec-Ch-Ua-Platform': '"Windows"',
                     'Sec-Fetch-Dest': 'document',
                     'Sec-Fetch-Mode': 'navigate',
                     'Sec-Fetch-Site': 'none',
                     'Sec-Fetch-User': '?1',
-                    'Upgrade-Insecure-Requests': '1'
+                    'Upgrade-Insecure-Requests': '1',
+                    'User-Agent': userAgent
                 });
 
-                // Stealth: Override webdriver detection
-                await page.addInitScript(() => {
-                    // Remove webdriver property
-                    Object.defineProperty(navigator, 'webdriver', { get: () => false });
-
-                    // Mock plugins
-                    Object.defineProperty(navigator, 'plugins', {
-                        get: () => [1, 2, 3, 4, 5]
-                    });
-
-                    // Mock languages
-                    Object.defineProperty(navigator, 'languages', {
-                        get: () => ['tr-TR', 'tr', 'en-US', 'en']
-                    });
-
-                    // Mock chrome runtime
-                    window.chrome = { runtime: {} };
-
-                    // Mock permissions
-                    const originalQuery = window.navigator.permissions.query;
-                    window.navigator.permissions.query = (parameters) =>
-                        parameters.name === 'notifications'
-                            ? Promise.resolve({ state: Notification.permission })
-                            : originalQuery(parameters);
-                });
+                // Emulate timezone
+                await page.context().addCookies([{
+                    name: 'timezone',
+                    value: 'Europe/Istanbul',
+                    domain: new URL(config.searchUrl(query)).hostname,
+                    path: '/'
+                }]).catch(() => {});
             }
         ],
         async requestHandler({ page, request }) {
             console.log(`Scraping ${store}: ${request.url}`);
 
-            // Random delay before actions (anti-bot)
-            await page.waitForTimeout(randomDelay(1000, 2000));
+            // Initial delay - human-like page load observation
+            await page.waitForTimeout(randomDelay(800, 1500));
 
             // Wait for products to load
             let selectorFound = false;
             try {
-                await page.waitForSelector(config.waitSelector, { timeout: 20000 });
+                await page.waitForSelector(config.waitSelector, { timeout: 15000 });
                 selectorFound = true;
             } catch (e) {
-                console.log(`${store}: Primary selector not found`);
+                console.log(`${store}: Primary selector timeout, trying fallback...`);
+                // Try waiting for any content
+                try {
+                    await page.waitForSelector('body', { timeout: 5000 });
+                } catch (e2) {}
             }
 
-            // Additional wait for JS rendering
-            await page.waitForTimeout(randomDelay(2000, 3000));
+            // Wait for JS rendering and dynamic content
+            await page.waitForTimeout(randomDelay(1500, 2500));
 
-            // Scroll to trigger lazy loading - more human-like
-            await page.evaluate(() => {
-                window.scrollTo({ top: document.body.scrollHeight / 3, behavior: 'smooth' });
-            });
-            await page.waitForTimeout(randomDelay(1000, 1500));
+            // Human-like scrolling behavior - gradual scroll with pauses
+            const scrollSteps = [0.2, 0.4, 0.6, 0.5, 0.3]; // Scroll pattern
+            for (const step of scrollSteps) {
+                await page.evaluate((s) => {
+                    window.scrollTo({
+                        top: document.body.scrollHeight * s,
+                        behavior: 'smooth'
+                    });
+                }, step);
+                await page.waitForTimeout(randomDelay(400, 800));
+            }
 
-            await page.evaluate(() => {
-                window.scrollTo({ top: document.body.scrollHeight * 0.6, behavior: 'smooth' });
-            });
-            await page.waitForTimeout(randomDelay(800, 1200));
+            // Small random mouse movements (anti-bot)
+            try {
+                await page.mouse.move(
+                    100 + Math.random() * 200,
+                    100 + Math.random() * 200
+                );
+                await page.waitForTimeout(randomDelay(100, 300));
+                await page.mouse.move(
+                    300 + Math.random() * 400,
+                    200 + Math.random() * 300
+                );
+            } catch (e) {}
+
+            // Wait a bit more for lazy-loaded images
+            await page.waitForTimeout(randomDelay(500, 1000));
 
             // Parse products
             const parsed = await config.parser(page);
