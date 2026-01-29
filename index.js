@@ -941,7 +941,13 @@ function smartFilterProducts(query, products) {
 
     const removed = analyzed.filter(p => !p.isRelevant);
 
+    // Log per-store breakdown
+    const storeBreakdown = {};
+    relevant.forEach(p => {
+        storeBreakdown[p.store] = (storeBreakdown[p.store] || 0) + 1;
+    });
     console.log(`Smart filter: ${relevant.length} relevant, ${removed.length} removed`);
+    console.log(`By store: ${Object.entries(storeBreakdown).map(([s,c]) => `${s}:${c}`).join(', ')}`);
 
     return {
         searchIntent: intent.intentLabel,
