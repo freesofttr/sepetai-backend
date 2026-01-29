@@ -67,9 +67,9 @@ async function preCachePopularSearches() {
     console.log('Pre-caching complete');
 }
 
-// Available stores for Crawlee - ALL stores with improved stealth
-// Re-enabled with new anti-detection techniques
-const CRAWLEE_STORES = ['trendyol', 'hepsiburada', 'amazon', 'n11', 'teknosa', 'vatan', 'mediamarkt', 'pttavm', 'pazarama'];
+// Available stores for Crawlee - PROVEN stores only (fast & reliable)
+// Others blocked by bot protection: hepsiburada, n11, vatan (403), mediamarkt, pttavm, pazarama
+const CRAWLEE_STORES = ['trendyol', 'amazon', 'teknosa'];
 
 // Scrape a single store using Crawlee + Playwright
 async function scrapeStore(query, store) {
@@ -167,14 +167,14 @@ const STORE_DISPLAY_NAMES = {
 // ALL stores (for UI listing)
 const ALL_STORES = ['trendyol', 'hepsiburada', 'amazon', 'n11', 'teknosa', 'vatan', 'mediamarkt', 'pttavm', 'pazarama'];
 
-// Fallback reasons (if scraping fails despite stealth)
+// Unavailable store reasons (bot protection active)
 const UNAVAILABLE_REASONS = {
-    hepsiburada: 'Gecici olarak erisilemedi',
-    n11: 'Gecici olarak erisilemedi',
-    vatan: 'Gecici olarak erisilemedi',
-    pttavm: 'Gecici olarak erisilemedi',
-    mediamarkt: 'Gecici olarak erisilemedi',
-    pazarama: 'Gecici olarak erisilemedi'
+    hepsiburada: 'Bot korumasi aktif',
+    n11: 'Bot korumasi aktif',
+    vatan: 'Erisim engellendi (403)',
+    pttavm: 'Erisim engellendi',
+    mediamarkt: 'Bot korumasi aktif',
+    pazarama: 'Erisim engellendi'
 };
 
 // Helper: Scrape store with status tracking
@@ -216,54 +216,29 @@ function buildStoreSummary(storeResult) {
 }
 
 async function fetchAndCacheSearch(query) {
-    // ALL 9 STORES with improved stealth - scrape in batches of 3
-    console.log(`Starting Crawlee scrape for: "${query}" (9 stores)`);
+    // FAST MODE: Only proven stores (trendyol, amazon, teknosa) - all parallel
+    console.log(`Starting Crawlee scrape for: "${query}"`);
     const startTime = Date.now();
 
     // Track all store results with status
     const storeResults = {};
 
-    // Batch 1: Trendyol, Amazon, Teknosa (most reliable)
-    console.log('Batch 1: trendyol, amazon, teknosa');
-    const batch1 = await Promise.all([
+    // PROVEN STORES - all parallel for speed (~30s total)
+    console.log('Scraping: trendyol, amazon, teknosa (parallel)');
+    const results = await Promise.all([
         scrapeStoreWithStatus(query, 'trendyol'),
         scrapeStoreWithStatus(query, 'amazon'),
         scrapeStoreWithStatus(query, 'teknosa')
     ]);
-    storeResults.trendyol = batch1[0];
-    storeResults.amazon = batch1[1];
-    storeResults.teknosa = batch1[2];
-
-    // Batch 2: Hepsiburada, N11, Vatan (harder to scrape)
-    console.log('Batch 2: hepsiburada, n11, vatan');
-    const batch2 = await Promise.all([
-        scrapeStoreWithStatus(query, 'hepsiburada'),
-        scrapeStoreWithStatus(query, 'n11'),
-        scrapeStoreWithStatus(query, 'vatan')
-    ]);
-    storeResults.hepsiburada = batch2[0];
-    storeResults.n11 = batch2[1];
-    storeResults.vatan = batch2[2];
-
-    // Batch 3: MediaMarkt, PttAvm, Pazarama
-    console.log('Batch 3: mediamarkt, pttavm, pazarama');
-    const batch3 = await Promise.all([
-        scrapeStoreWithStatus(query, 'mediamarkt'),
-        scrapeStoreWithStatus(query, 'pttavm'),
-        scrapeStoreWithStatus(query, 'pazarama')
-    ]);
-    storeResults.mediamarkt = batch3[0];
-    storeResults.pttavm = batch3[1];
-    storeResults.pazarama = batch3[2];
+    storeResults.trendyol = results[0];
+    storeResults.amazon = results[1];
+    storeResults.teknosa = results[2];
 
     // Collect all products
     const allProducts = Object.values(storeResults).flatMap(r => r.products);
 
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-    const storeCounts = Object.entries(storeResults)
-        .map(([k, v]) => `${k.substring(0,3).toUpperCase()}:${v.products.length}`)
-        .join(' ');
-    console.log(`Total scraped: ${allProducts.length} in ${duration}s (${storeCounts})`);
+    console.log(`Total scraped: ${allProducts.length} in ${duration}s (T:${storeResults.trendyol.products.length} A:${storeResults.amazon.products.length} TK:${storeResults.teknosa.products.length})`);
 
     // Apply smart filtering
     const filtered = smartFilterProducts(query, allProducts);
