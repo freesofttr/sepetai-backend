@@ -49,6 +49,44 @@ function getRandomUserAgent() {
     return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
+/**
+ * GLOBAL Turkish Price Parser - Used by all store parsers
+ * Handles formats: 3.499,00 TL | 49.999,99 TL | 1.234.567,89 TL
+ * Returns 0 for invalid prices or prices outside reasonable range
+ */
+function parseTurkishPriceGlobal(text) {
+    if (!text) return 0;
+
+    // Extract Turkish price pattern: digits with dot separators, comma decimal
+    // Pattern matches: 3.499,00 or 49.999,99 or 1.234.567,89
+    const pricePattern = /(\d{1,3}(?:\.\d{3})*),(\d{2})/;
+    const match = text.match(pricePattern);
+
+    if (match) {
+        const integerPart = match[1].replace(/\./g, ''); // Remove thousand separators
+        const decimalPart = match[2];
+        const price = parseFloat(integerPart + '.' + decimalPart);
+
+        // Sanity check: reasonable price range (10 TL - 500,000 TL)
+        if (price >= 10 && price <= 500000) {
+            return price;
+        }
+        return 0;
+    }
+
+    // Fallback: Simple number without thousands separator (e.g., "3499,00")
+    const simplePattern = /(\d+),(\d{2})/;
+    const simpleMatch = text.match(simplePattern);
+    if (simpleMatch) {
+        const price = parseFloat(simpleMatch[1] + '.' + simpleMatch[2]);
+        if (price >= 10 && price <= 500000) {
+            return price;
+        }
+    }
+
+    return 0;
+}
+
 function getRandomScreen() {
     return SCREEN_CONFIGS[Math.floor(Math.random() * SCREEN_CONFIGS.length)];
 }
@@ -496,6 +534,23 @@ async function parseHepsiburada(page) {
 async function parseAmazon(page) {
     return await page.evaluate(() => {
         const products = [];
+
+        // Helper: Parse Turkish price format
+        function parseTurkishPrice(text) {
+            if (!text) return 0;
+            const match = text.match(/(\d{1,3}(?:\.\d{3})*),(\d{2})/);
+            if (match) {
+                const price = parseFloat(match[1].replace(/\./g, '') + '.' + match[2]);
+                return (price >= 10 && price <= 500000) ? price : 0;
+            }
+            const simple = text.match(/(\d+),(\d{2})/);
+            if (simple) {
+                const price = parseFloat(simple[1] + '.' + simple[2]);
+                return (price >= 10 && price <= 500000) ? price : 0;
+            }
+            return 0;
+        }
+
         document.querySelectorAll('[data-component-type="s-search-result"]').forEach((card, index) => {
             if (index >= 25) return;
             try {
@@ -509,19 +564,24 @@ async function parseAmazon(page) {
                 if (!link || !priceWholeEl) return;
 
                 const href = link.getAttribute('href') || '';
+
+                // Parse price - Amazon uses separate whole/fraction elements
+                // priceWhole might be "48.998" (with dot as thousands separator)
                 const priceWhole = priceWholeEl.textContent?.replace(/[^\d]/g, '') || '0';
                 const priceFraction = priceFractionEl?.textContent?.replace(/[^\d]/g, '') || '00';
                 const price = parseFloat(priceWhole + '.' + priceFraction);
 
+                // Skip unreasonable prices
+                if (!price || price < 10 || price > 500000) return;
+
                 let originalPrice = null;
                 if (originalPriceEl) {
-                    const origText = originalPriceEl.textContent || '';
-                    originalPrice = parseFloat(origText.replace(/[^\d,]/g, '').replace(',', '.'));
+                    originalPrice = parseTurkishPrice(originalPriceEl.textContent);
                 }
 
                 const asin = card.getAttribute('data-asin');
 
-                if (price && price > 0 && asin) {
+                if (asin) {
                     products.push({
                         name: nameEl?.textContent?.trim() || 'Unknown',
                         price,
@@ -587,6 +647,23 @@ async function parseN11(page) {
 async function parseTeknosa(page) {
     return await page.evaluate(() => {
         const products = [];
+
+        // Helper: Parse Turkish price format
+        function parseTurkishPrice(text) {
+            if (!text) return 0;
+            const match = text.match(/(\d{1,3}(?:\.\d{3})*),(\d{2})/);
+            if (match) {
+                const price = parseFloat(match[1].replace(/\./g, '') + '.' + match[2]);
+                return (price >= 10 && price <= 500000) ? price : 0;
+            }
+            const simple = text.match(/(\d+),(\d{2})/);
+            if (simple) {
+                const price = parseFloat(simple[1] + '.' + simple[2]);
+                return (price >= 10 && price <= 500000) ? price : 0;
+            }
+            return 0;
+        }
+
         document.querySelectorAll('.product-list-item, .prd').forEach((card, index) => {
             if (index >= 25) return;
             try {
@@ -599,29 +676,28 @@ async function parseTeknosa(page) {
                 if (!link || !priceEl) return;
 
                 const href = link.getAttribute('href') || '';
-                const priceText = priceEl.textContent || '';
-                const price = parseFloat(priceText.replace(/[^\d,]/g, '').replace(',', '.'));
+                const price = parseTurkishPrice(priceEl.textContent);
+
+                // Skip unreasonable prices
+                if (!price || price < 10 || price > 500000) return;
 
                 let originalPrice = null;
                 if (originalPriceEl) {
-                    const origText = originalPriceEl.textContent || '';
-                    originalPrice = parseFloat(origText.replace(/[^\d,]/g, '').replace(',', '.'));
+                    originalPrice = parseTurkishPrice(originalPriceEl.textContent);
                 }
 
                 const productIdMatch = href.match(/-p-(\d+)/);
                 const productId = productIdMatch ? productIdMatch[1] : Math.random().toString(36).slice(2);
 
-                if (price && price > 0) {
-                    products.push({
-                        name: nameEl?.textContent?.trim() || 'Unknown',
-                        price,
-                        originalPrice: originalPrice > price ? originalPrice : null,
-                        imageUrl: imgEl?.src || imgEl?.getAttribute('data-src') || imgEl?.getAttribute('data-lazy') || null,
-                        productUrl: href.startsWith('http') ? href : 'https://www.teknosa.com' + href,
-                        productId: 'tek-' + productId,
-                        store: 'Teknosa'
-                    });
-                }
+                products.push({
+                    name: nameEl?.textContent?.trim() || 'Unknown',
+                    price,
+                    originalPrice: originalPrice > price ? originalPrice : null,
+                    imageUrl: imgEl?.src || imgEl?.getAttribute('data-src') || imgEl?.getAttribute('data-lazy') || null,
+                    productUrl: href.startsWith('http') ? href : 'https://www.teknosa.com' + href,
+                    productId: 'tek-' + productId,
+                    store: 'Teknosa'
+                });
             } catch (e) {}
         });
         return products;
