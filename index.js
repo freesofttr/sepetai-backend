@@ -716,11 +716,34 @@ function classifyProduct(product, intent) {
         return { type: 'Alakasız', confidence: 0.8, isRelevant: false };
     }
 
-    // Model-specific filtering: if user searched "iphone 15", exclude "iphone 16", "iphone 14" etc.
+    // Check if product name contains accessory patterns
+    const matchedAccessoryPattern = ACCESSORY_PATTERNS.find(pattern => nameLower.includes(pattern));
+
+    // Check if product should be excluded based on intent
+    const matchedExcludeKeyword = intent.excludeKeywords.find(keyword => nameLower.includes(keyword));
+
+    // Check if it has main product indicators (storage, variant names)
+    const hasMainIndicator = intent.mainProductIndicators.some(ind => nameLower.includes(ind));
+
+    // Model-specific filtering: if user searched "iphone 15", they want the PHONE, not accessories
     if (intent.modelQuery) {
         if (!matchesSpecificModel(product.name, intent.modelQuery)) {
             return { type: 'Farklı Model', confidence: 0.9, isRelevant: false };
         }
+
+        // CRITICAL: For model-specific searches, STRICTLY exclude accessories
+        // Even if product contains "iphone 15", we don't want "iphone 15 kılıf" or "iphone 15 cam"
+        if (matchedAccessoryPattern || matchedExcludeKeyword) {
+            // Only keep if it has STRONG main product indicators like storage capacity
+            // "128GB" or "256GB" indicates it's the actual phone, not an accessory
+            const hasStorageIndicator = /\b(64|128|256|512)\s*gb\b/i.test(nameLower) || /\b1\s*tb\b/i.test(nameLower);
+            if (!hasStorageIndicator) {
+                return { type: 'Aksesuar', confidence: 0.95, isRelevant: false };
+            }
+        }
+
+        // Model matches and not an accessory - this is the actual product
+        return { type: 'Ana Ürün', confidence: 0.95, isRelevant: true };
     }
 
     // For general searches, include everything that has at least some relevance
@@ -728,15 +751,6 @@ function classifyProduct(product, intent) {
         const confidence = 0.5 + (queryRelevance * 0.5);
         return { type: 'Ana Ürün', confidence, isRelevant: true };
     }
-
-    // Check if product name contains accessory patterns
-    const matchedAccessoryPattern = ACCESSORY_PATTERNS.find(pattern => nameLower.includes(pattern));
-
-    // Check if product should be excluded based on intent
-    const matchedExcludeKeyword = intent.excludeKeywords.find(keyword => nameLower.includes(keyword));
-
-    // Check if it has main product indicators
-    const hasMainIndicator = intent.mainProductIndicators.some(ind => nameLower.includes(ind));
 
     // LESS AGGRESSIVE FILTERING: Only filter obvious accessories
     // Include product if it has main indicators OR if name is descriptive enough
