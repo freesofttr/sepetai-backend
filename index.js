@@ -150,6 +150,57 @@ async function scrapeStore(query, store) {
     });
 }
 
+// Store display names
+const STORE_DISPLAY_NAMES = {
+    trendyol: 'Trendyol',
+    hepsiburada: 'Hepsiburada',
+    amazon: 'Amazon',
+    n11: 'N11',
+    teknosa: 'Teknosa',
+    vatan: 'Vatan',
+    mediamarkt: 'MediaMarkt',
+    pttavm: 'PttAvm',
+    pazarama: 'Pazarama'
+};
+
+// Helper: Scrape store with status tracking
+async function scrapeStoreWithStatus(query, store) {
+    try {
+        const products = await scrapeStore(query, store);
+        return {
+            store,
+            products,
+            status: products.length > 0 ? 'success' : 'empty',
+            statusMessage: null
+        };
+    } catch (error) {
+        const is403 = error.message?.includes('403') || error.message?.includes('blocked');
+        return {
+            store,
+            products: [],
+            status: is403 ? 'blocked' : 'unavailable',
+            statusMessage: is403 ? 'Geçici olarak erişilemiyor' : 'Şu an erişilemiyor'
+        };
+    }
+}
+
+// Helper: Build store summary from products
+function buildStoreSummary(storeResult) {
+    const { store, products, status, statusMessage } = storeResult;
+    const minPrice = products.length > 0
+        ? Math.min(...products.map(p => p.price))
+        : null;
+
+    return {
+        id: store,
+        name: STORE_DISPLAY_NAMES[store] || store,
+        productCount: products.length,
+        minPrice,
+        status,
+        statusMessage
+    };
+}
+
 async function fetchAndCacheSearch(query) {
     // With Crawlee/Playwright, we run 2 stores at a time to avoid memory issues
     // Each browser instance uses ~100-200MB RAM
@@ -158,51 +209,54 @@ async function fetchAndCacheSearch(query) {
     console.log(`Starting Crawlee scrape for: "${query}"`);
     const startTime = Date.now();
 
+    // Track all store results with status
+    const storeResults = {};
+
     // Batch 1: Main stores (highest priority)
-    const [trendyolProducts, amazonProducts] = await Promise.all([
-        scrapeStore(query, 'trendyol'),
-        scrapeStore(query, 'amazon')
+    const [trendyolResult, amazonResult] = await Promise.all([
+        scrapeStoreWithStatus(query, 'trendyol'),
+        scrapeStoreWithStatus(query, 'amazon')
     ]);
+    storeResults.trendyol = trendyolResult;
+    storeResults.amazon = amazonResult;
 
     await delay(1000); // Give browsers time to cleanup
 
     // Batch 2: Secondary stores
-    const [hepsiburadaProducts, teknosaProducts] = await Promise.all([
-        scrapeStore(query, 'hepsiburada'),
-        scrapeStore(query, 'teknosa')
+    const [hepsiburadaResult, teknosaResult] = await Promise.all([
+        scrapeStoreWithStatus(query, 'hepsiburada'),
+        scrapeStoreWithStatus(query, 'teknosa')
     ]);
+    storeResults.hepsiburada = hepsiburadaResult;
+    storeResults.teknosa = teknosaResult;
 
     await delay(1000);
 
     // Batch 3: More stores
-    const [n11Products, vatanProducts] = await Promise.all([
-        scrapeStore(query, 'n11'),
-        scrapeStore(query, 'vatan')
+    const [n11Result, vatanResult] = await Promise.all([
+        scrapeStoreWithStatus(query, 'n11'),
+        scrapeStoreWithStatus(query, 'vatan')
     ]);
+    storeResults.n11 = n11Result;
+    storeResults.vatan = vatanResult;
 
     await delay(1000);
 
     // Batch 4: Remaining stores
-    const [mediamarktProducts, pttavmProducts, pazaramaProducts] = await Promise.all([
-        scrapeStore(query, 'mediamarkt'),
-        scrapeStore(query, 'pttavm'),
-        scrapeStore(query, 'pazarama')
+    const [mediamarktResult, pttavmResult, pazaramaResult] = await Promise.all([
+        scrapeStoreWithStatus(query, 'mediamarkt'),
+        scrapeStoreWithStatus(query, 'pttavm'),
+        scrapeStoreWithStatus(query, 'pazarama')
     ]);
+    storeResults.mediamarkt = mediamarktResult;
+    storeResults.pttavm = pttavmResult;
+    storeResults.pazarama = pazaramaResult;
 
-    const allProducts = [
-        ...trendyolProducts,
-        ...hepsiburadaProducts,
-        ...amazonProducts,
-        ...n11Products,
-        ...pttavmProducts,
-        ...pazaramaProducts,
-        ...teknosaProducts,
-        ...vatanProducts,
-        ...mediamarktProducts
-    ];
+    // Collect all products
+    const allProducts = Object.values(storeResults).flatMap(r => r.products);
 
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`Total scraped: ${allProducts.length} in ${duration}s (T:${trendyolProducts.length} H:${hepsiburadaProducts.length} A:${amazonProducts.length} N:${n11Products.length} P:${pttavmProducts.length} Z:${pazaramaProducts.length} TK:${teknosaProducts.length} V:${vatanProducts.length} MM:${mediamarktProducts.length})`);
+    console.log(`Total scraped: ${allProducts.length} in ${duration}s (T:${storeResults.trendyol.products.length} H:${storeResults.hepsiburada.products.length} A:${storeResults.amazon.products.length} N:${storeResults.n11.products.length} P:${storeResults.pttavm.products.length} Z:${storeResults.pazarama.products.length} TK:${storeResults.teknosa.products.length} V:${storeResults.vatan.products.length} MM:${storeResults.mediamarkt.products.length})`);
 
     // Apply smart filtering
     const filtered = smartFilterProducts(query, allProducts);
@@ -212,6 +266,38 @@ async function fetchAndCacheSearch(query) {
         console.error('Failed to record prices:', e.message);
     });
 
+    // Build stores array (sorted by minPrice, successful stores first)
+    const stores = Object.values(storeResults)
+        .map(buildStoreSummary)
+        .sort((a, b) => {
+            // Success stores first
+            if (a.status === 'success' && b.status !== 'success') return -1;
+            if (a.status !== 'success' && b.status === 'success') return 1;
+            // Then by minPrice
+            if (a.minPrice === null) return 1;
+            if (b.minPrice === null) return -1;
+            return a.minPrice - b.minPrice;
+        });
+
+    // Build productsByStore (filtered products grouped by store)
+    const productsByStore = {};
+    for (const product of filtered.products) {
+        const storeId = product.store?.toLowerCase() || 'unknown';
+        if (!productsByStore[storeId]) {
+            productsByStore[storeId] = [];
+        }
+        productsByStore[storeId].push(product);
+    }
+
+    // Sort each store's products by price
+    for (const storeId of Object.keys(productsByStore)) {
+        productsByStore[storeId].sort((a, b) => a.price - b.price);
+        // Mark cheapest product
+        if (productsByStore[storeId].length > 0) {
+            productsByStore[storeId][0].isCheapest = true;
+        }
+    }
+
     const result = {
         query,
         count: filtered.products.length,
@@ -220,6 +306,12 @@ async function fetchAndCacheSearch(query) {
         filteredCount: filtered.filteredCount,
         removedCount: filtered.removedCount,
         lastFetched: Date.now(),
+
+        // NEW: Layered UI support
+        stores,
+        productsByStore,
+
+        // Legacy: All products flat (for backward compatibility)
         products: filtered.products
     };
 
