@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const db = require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -7,6 +8,13 @@ const API_KEY = '27c0df8063c38ebc97100e825ff4cd1c';
 
 app.use(cors());
 app.use(express.json());
+
+// Initialize database on startup
+db.checkConnection().then(connected => {
+    if (connected) {
+        db.initDatabase();
+    }
+});
 
 // In-memory cache with stale-while-revalidate
 const cache = new Map();
@@ -132,6 +140,11 @@ async function fetchAndCacheSearch(query) {
     // Apply smart filtering
     const filtered = smartFilterProducts(query, allProducts);
 
+    // Record prices to database (async, don't wait)
+    db.recordPricesBatch(filtered.products).catch(e => {
+        console.error('Failed to record prices:', e.message);
+    });
+
     const result = {
         query,
         count: filtered.products.length,
@@ -148,7 +161,56 @@ async function fetchAndCacheSearch(query) {
 }
 
 app.get('/', (req, res) => {
-    res.json({ status: 'ok', message: 'SepetAI Backend' });
+    res.json({ status: 'ok', message: 'SepetAI Backend', version: '2.0', features: ['multi-store', 'price-history', 'ai-analysis'] });
+});
+
+// ==========================================
+// PRICE HISTORY ENDPOINTS
+// ==========================================
+
+// Get price history for a product
+app.get('/api/products/:productId/history', async (req, res) => {
+    const { productId } = req.params;
+    const days = parseInt(req.query.days) || 30;
+
+    try {
+        const data = await db.getPriceHistory(productId, days);
+        res.json({
+            productId,
+            days,
+            ...data
+        });
+    } catch (error) {
+        console.error('Price history error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Get AI price analysis for a product
+app.get('/api/products/:productId/analysis', async (req, res) => {
+    const { productId } = req.params;
+    const currentPrice = parseFloat(req.query.currentPrice) || 0;
+
+    try {
+        const analysis = await db.getSimplePriceAnalysis(productId, currentPrice);
+
+        if (!analysis) {
+            return res.json({
+                productId,
+                hasData: false,
+                message: 'Veritabani baglantisi yok veya veri bulunamadi'
+            });
+        }
+
+        res.json({
+            productId,
+            hasData: true,
+            ...analysis
+        });
+    } catch (error) {
+        console.error('Price analysis error:', error.message);
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // Debug endpoint to see raw HTML structure
