@@ -38,8 +38,8 @@ function getRandomUserAgent() {
     return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
-// Random delay helper
-function randomDelay(min = 500, max = 1500) {
+// Random delay helper - reduced for speed
+function randomDelay(min = 300, max = 800) {
     return Math.floor(Math.random() * (max - min) + min);
 }
 
@@ -615,9 +615,9 @@ async function scrapeStore(store, query) {
 
     const crawler = new PlaywrightCrawler({
         maxConcurrency: 1,
-        maxRequestRetries: 2,
-        requestHandlerTimeoutSecs: 50,
-        navigationTimeoutSecs: 35,
+        maxRequestRetries: 1,  // Reduced from 2 for speed
+        requestHandlerTimeoutSecs: 25,  // Reduced from 50
+        navigationTimeoutSecs: 15,  // Reduced from 35
         launchContext: {
             launchOptions: {
                 headless: true,

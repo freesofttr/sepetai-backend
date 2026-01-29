@@ -67,8 +67,9 @@ async function preCachePopularSearches() {
     console.log('Pre-caching complete');
 }
 
-// Available stores for Crawlee
-const CRAWLEE_STORES = ['trendyol', 'hepsiburada', 'amazon', 'n11', 'teknosa', 'vatan', 'mediamarkt', 'pttavm', 'pazarama'];
+// Available stores for Crawlee - only working stores for speed
+// Disabled: hepsiburada (0 products), n11 (0 products), vatan (403), pttavm (403), mediamarkt (0), pazarama (0)
+const CRAWLEE_STORES = ['trendyol', 'amazon', 'teknosa'];
 
 // Scrape a single store using Crawlee + Playwright
 async function scrapeStore(query, store) {
@@ -140,13 +141,13 @@ async function scrapeStore(query, store) {
             resolve([]);
         });
 
-        // Timeout handling
+        // Timeout handling - reduced for speed
         setTimeout(() => {
             if (!child.killed) {
                 console.log(`${store}: timeout, killing process`);
                 child.kill('SIGTERM');
             }
-        }, 85000);
+        }, 30000);  // 30 seconds (reduced from 85)
     });
 }
 
@@ -202,61 +203,28 @@ function buildStoreSummary(storeResult) {
 }
 
 async function fetchAndCacheSearch(query) {
-    // With Crawlee/Playwright, we run 2 stores at a time to avoid memory issues
-    // Each browser instance uses ~100-200MB RAM
-    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
+    // OPTIMIZED: Only 3 working stores, all in parallel for speed
     console.log(`Starting Crawlee scrape for: "${query}"`);
     const startTime = Date.now();
 
     // Track all store results with status
     const storeResults = {};
 
-    // Batch 1: Main stores (highest priority)
-    const [trendyolResult, amazonResult] = await Promise.all([
+    // Single batch: All 3 working stores in parallel
+    const [trendyolResult, amazonResult, teknosaResult] = await Promise.all([
         scrapeStoreWithStatus(query, 'trendyol'),
-        scrapeStoreWithStatus(query, 'amazon')
+        scrapeStoreWithStatus(query, 'amazon'),
+        scrapeStoreWithStatus(query, 'teknosa')
     ]);
     storeResults.trendyol = trendyolResult;
     storeResults.amazon = amazonResult;
-
-    await delay(1000); // Give browsers time to cleanup
-
-    // Batch 2: Secondary stores
-    const [hepsiburadaResult, teknosaResult] = await Promise.all([
-        scrapeStoreWithStatus(query, 'hepsiburada'),
-        scrapeStoreWithStatus(query, 'teknosa')
-    ]);
-    storeResults.hepsiburada = hepsiburadaResult;
     storeResults.teknosa = teknosaResult;
-
-    await delay(1000);
-
-    // Batch 3: More stores
-    const [n11Result, vatanResult] = await Promise.all([
-        scrapeStoreWithStatus(query, 'n11'),
-        scrapeStoreWithStatus(query, 'vatan')
-    ]);
-    storeResults.n11 = n11Result;
-    storeResults.vatan = vatanResult;
-
-    await delay(1000);
-
-    // Batch 4: Remaining stores
-    const [mediamarktResult, pttavmResult, pazaramaResult] = await Promise.all([
-        scrapeStoreWithStatus(query, 'mediamarkt'),
-        scrapeStoreWithStatus(query, 'pttavm'),
-        scrapeStoreWithStatus(query, 'pazarama')
-    ]);
-    storeResults.mediamarkt = mediamarktResult;
-    storeResults.pttavm = pttavmResult;
-    storeResults.pazarama = pazaramaResult;
 
     // Collect all products
     const allProducts = Object.values(storeResults).flatMap(r => r.products);
 
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`Total scraped: ${allProducts.length} in ${duration}s (T:${storeResults.trendyol.products.length} H:${storeResults.hepsiburada.products.length} A:${storeResults.amazon.products.length} N:${storeResults.n11.products.length} P:${storeResults.pttavm.products.length} Z:${storeResults.pazarama.products.length} TK:${storeResults.teknosa.products.length} V:${storeResults.vatan.products.length} MM:${storeResults.mediamarkt.products.length})`);
+    console.log(`Total scraped: ${allProducts.length} in ${duration}s (T:${storeResults.trendyol.products.length} A:${storeResults.amazon.products.length} TK:${storeResults.teknosa.products.length})`);
 
     // Apply smart filtering
     const filtered = smartFilterProducts(query, allProducts);
