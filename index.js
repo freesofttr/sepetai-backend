@@ -164,6 +164,19 @@ const STORE_DISPLAY_NAMES = {
     pazarama: 'Pazarama'
 };
 
+// ALL stores (for UI listing)
+const ALL_STORES = ['trendyol', 'hepsiburada', 'amazon', 'n11', 'teknosa', 'vatan', 'mediamarkt', 'pttavm', 'pazarama'];
+
+// Unavailable store reasons
+const UNAVAILABLE_REASONS = {
+    hepsiburada: 'Bot korumasi nedeniyle erisilemedi',
+    n11: 'Bot korumasi nedeniyle erisilemedi',
+    vatan: 'IP engeli (403)',
+    pttavm: 'IP engeli (403)',
+    mediamarkt: 'Urun bulunamadi',
+    pazarama: 'Urun bulunamadi'
+};
+
 // Helper: Scrape store with status tracking
 async function scrapeStoreWithStatus(query, store) {
     try {
@@ -234,13 +247,27 @@ async function fetchAndCacheSearch(query) {
         console.error('Failed to record prices:', e.message);
     });
 
+    // Add unavailable stores to storeResults
+    for (const storeId of ALL_STORES) {
+        if (!storeResults[storeId]) {
+            storeResults[storeId] = {
+                store: storeId,
+                products: [],
+                status: 'unavailable',
+                statusMessage: UNAVAILABLE_REASONS[storeId] || 'Su an erisilemedi'
+            };
+        }
+    }
+
     // Build stores array (sorted by minPrice, successful stores first)
     const stores = Object.values(storeResults)
         .map(buildStoreSummary)
         .sort((a, b) => {
-            // Success stores first
-            if (a.status === 'success' && b.status !== 'success') return -1;
-            if (a.status !== 'success' && b.status === 'success') return 1;
+            // Success stores first, then empty, then unavailable
+            const statusOrder = { success: 0, empty: 1, unavailable: 2, blocked: 3 };
+            const aOrder = statusOrder[a.status] ?? 4;
+            const bOrder = statusOrder[b.status] ?? 4;
+            if (aOrder !== bOrder) return aOrder - bOrder;
             // Then by minPrice
             if (a.minPrice === null) return 1;
             if (b.minPrice === null) return -1;
