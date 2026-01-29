@@ -284,8 +284,7 @@ async function parseHepsiburada(page) {
                     productUrl: href.startsWith('http') ? href : 'https://www.hepsiburada.com' + href,
                     productId: 'hb-' + productId,
                     store: 'Hepsiburada'
-                    });
-                }
+                });
             } catch (e) {}
         });
         return products;
