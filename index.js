@@ -1685,11 +1685,24 @@ function parseTeknosaProducts(html) {
             }
         }
 
-        // Extract image
+        // Extract image - Teknosa uses various CDN patterns
         let imageUrl = null;
-        const imgMatch = cardContent.match(/src="(https:\/\/[^"]*teknosa[^"]*\.(?:jpg|png|webp)[^"]*)"/i)
-            || cardContent.match(/data-src="(https:\/\/[^"]*\.(?:jpg|png|webp)[^"]*)"/i);
-        if (imgMatch) imageUrl = imgMatch[1];
+        const imgPatterns = [
+            /src="(https:\/\/[^"]*teknosa[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i,
+            /src="(https:\/\/[^"]*cdn[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i,
+            /data-src="(https:\/\/[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i,
+            /data-lazy="(https:\/\/[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i,
+            /data-original="(https:\/\/[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i,
+            /src="(https:\/\/[^"]+\/(?:products?|images?|media)[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i,
+            /src="(https:\/\/[^"]+\.(?:jpg|jpeg|png|webp))"/i
+        ];
+        for (const pattern of imgPatterns) {
+            const m = cardContent.match(pattern);
+            if (m && m[1] && !m[1].includes('logo') && !m[1].includes('icon') && !m[1].includes('banner')) {
+                imageUrl = m[1];
+                break;
+            }
+        }
 
         if (!name || !price || price < 1) continue;
 
@@ -1789,11 +1802,23 @@ function parseVatanProducts(html) {
             }
         }
 
-        // Extract image
+        // Extract image - Vatan uses various CDN patterns
         let imageUrl = null;
-        const imgMatch = cardContent.match(/src="(https:\/\/[^"]*vatanbilgisayar[^"]*\.(?:jpg|png|webp)[^"]*)"/i)
-            || cardContent.match(/data-src="(https:\/\/[^"]*\.(?:jpg|png|webp)[^"]*)"/i);
-        if (imgMatch) imageUrl = imgMatch[1];
+        const imgPatterns = [
+            /src="(https:\/\/[^"]*vatanbilgisayar[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i,
+            /src="(https:\/\/[^"]*cdn[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i,
+            /data-src="(https:\/\/[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i,
+            /data-lazy="(https:\/\/[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i,
+            /src="(https:\/\/[^"]+\/(?:products?|images?|media)[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i,
+            /src="(https:\/\/[^"]+\.(?:jpg|jpeg|png|webp))"/i
+        ];
+        for (const pattern of imgPatterns) {
+            const m = cardContent.match(pattern);
+            if (m && m[1] && !m[1].includes('logo') && !m[1].includes('icon') && !m[1].includes('banner')) {
+                imageUrl = m[1];
+                break;
+            }
+        }
 
         if (!name || !price || price < 1) continue;
 
@@ -1871,11 +1896,23 @@ function parseMediaMarktProducts(html) {
             }
         }
 
-        // Extract image
+        // Extract image - MediaMarkt uses various CDN patterns
         let imageUrl = null;
-        const imgMatch = cardContent.match(/src="(https:\/\/[^"]*mediamarkt[^"]*\.(?:jpg|png|webp)[^"]*)"/i)
-            || cardContent.match(/data-src="(https:\/\/[^"]*\.(?:jpg|png|webp)[^"]*)"/i);
-        if (imgMatch) imageUrl = imgMatch[1];
+        const imgPatterns = [
+            /src="(https:\/\/[^"]*mediamarkt[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i,
+            /src="(https:\/\/[^"]*cdn[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i,
+            /data-src="(https:\/\/[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i,
+            /data-lazy="(https:\/\/[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i,
+            /src="(https:\/\/[^"]+\/(?:products?|images?|media)[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i,
+            /src="(https:\/\/[^"]+\.(?:jpg|jpeg|png|webp))"/i
+        ];
+        for (const pattern of imgPatterns) {
+            const m = cardContent.match(pattern);
+            if (m && m[1] && !m[1].includes('logo') && !m[1].includes('icon') && !m[1].includes('banner')) {
+                imageUrl = m[1];
+                break;
+            }
+        }
 
         if (!name || !price || price < 1) continue;
 
