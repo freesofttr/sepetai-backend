@@ -255,16 +255,29 @@ async function parseTrendyol(page) {
         const products = [];
         const seenIds = new Set();
 
-        // Helper: Parse Turkish price format (1.234,56 or 1234,56)
+        // Helper: Parse Turkish price format (3.499,00 or 49.999,99)
         function parseTurkishPrice(text) {
             if (!text) return 0;
-            // Remove everything except digits, dots, and commas
-            let cleaned = text.replace(/[^\d.,]/g, '');
-            // Turkish format: 50.299,00 (dot = thousands, comma = decimal)
-            // Remove thousand separators (dots) and convert comma to dot
-            cleaned = cleaned.replace(/\.(?=\d{3})/g, '').replace(',', '.');
-            const price = parseFloat(cleaned);
-            return isNaN(price) ? 0 : price;
+
+            // Extract proper Turkish price pattern: 3.499,00 or 49.999,99 or 1.234.567,89
+            const pricePattern = /(\d{1,3}(?:\.\d{3})*),(\d{2})/;
+            const match = text.match(pricePattern);
+
+            if (match) {
+                // Remove dots from integer part, use comma as decimal
+                const integerPart = match[1].replace(/\./g, '');
+                const decimalPart = match[2];
+                return parseFloat(integerPart + '.' + decimalPart);
+            }
+
+            // Fallback: Simple number without thousands separator (e.g., "3499,00")
+            const simplePattern = /(\d+),(\d{2})/;
+            const simpleMatch = text.match(simplePattern);
+            if (simpleMatch) {
+                return parseFloat(simpleMatch[1] + '.' + simpleMatch[2]);
+            }
+
+            return 0;
         }
 
         // Strategy 1: Find all product links first, then work backwards to find cards
@@ -302,12 +315,17 @@ async function parseTrendyol(page) {
                 // Fallback: Look for any price-like element
                 if (!price || price < 100) {
                     const priceElements = card.querySelectorAll('[class*="prc"], [class*="price"]');
+                    let candidates = [];
                     for (const el of priceElements) {
                         const parsed = parseTurkishPrice(el.textContent);
-                        // Take the largest reasonable price (ignore small values like shipping)
-                        if (parsed > price && parsed >= 100) {
-                            price = parsed;
+                        // Collect reasonable prices (100 TL - 500,000 TL for most products)
+                        if (parsed >= 100 && parsed <= 500000) {
+                            candidates.push(parsed);
                         }
+                    }
+                    // Take the SMALLEST reasonable price (actual product price, not bundles)
+                    if (candidates.length > 0) {
+                        price = Math.min(...candidates);
                     }
                 }
 
@@ -315,18 +333,23 @@ async function parseTrendyol(page) {
                 if (!price || price < 100) {
                     const cardText = card.textContent || '';
                     // Match Turkish price format: 1.234,56 TL or 50.299,00 TL
-                    const priceMatches = cardText.match(/(\d{1,3}(?:\.\d{3})+,\d{2})\s*TL/g);
+                    const priceMatches = cardText.match(/(\d{1,3}(?:\.\d{3})*,\d{2})\s*TL/g);
                     if (priceMatches) {
-                        // Take the largest price found
+                        let candidates = [];
                         for (const match of priceMatches) {
                             const parsed = parseTurkishPrice(match);
-                            if (parsed > price) price = parsed;
+                            if (parsed >= 100 && parsed <= 500000) {
+                                candidates.push(parsed);
+                            }
+                        }
+                        if (candidates.length > 0) {
+                            price = Math.min(...candidates);
                         }
                     }
                 }
 
-                // Skip products with unreasonably low prices (likely parsing errors)
-                if (!price || price < 100) return;
+                // Skip products with unreasonable prices
+                if (!price || price < 100 || price > 500000) return;
 
                 // Find product name
                 let name = '';
