@@ -555,13 +555,43 @@ async function parseAmazon(page) {
             if (index >= 25) return;
             try {
                 const link = card.querySelector('a.a-link-normal.s-no-outline');
-                const nameEl = card.querySelector('h2 span');
                 const priceWholeEl = card.querySelector('.a-price-whole');
                 const priceFractionEl = card.querySelector('.a-price-fraction');
                 const originalPriceEl = card.querySelector('.a-text-price .a-offscreen');
                 const imgEl = card.querySelector('img.s-image');
 
                 if (!link || !priceWholeEl) return;
+
+                // Try multiple selectors for product name (Amazon changes their HTML often)
+                let productName = '';
+                const nameSelectors = [
+                    'h2.a-size-mini span.a-text-normal',
+                    'h2 span.a-text-normal',
+                    'h2.s-line-clamp-2 span',
+                    'h2 a span',
+                    '.a-size-base-plus.a-color-base.a-text-normal',
+                    '.a-size-medium.a-color-base.a-text-normal',
+                    'h2 span',
+                    '.a-link-normal .a-text-normal'
+                ];
+
+                for (const selector of nameSelectors) {
+                    const el = card.querySelector(selector);
+                    if (el && el.textContent && el.textContent.trim().length > 5) {
+                        productName = el.textContent.trim();
+                        break;
+                    }
+                }
+
+                // Fallback: try to get name from link title or image alt
+                if (!productName || productName.length < 5) {
+                    const linkTitle = link.getAttribute('title');
+                    const imgAlt = imgEl?.getAttribute('alt');
+                    productName = linkTitle || imgAlt || '';
+                }
+
+                // Skip if still no valid name
+                if (!productName || productName.length < 5) return;
 
                 const href = link.getAttribute('href') || '';
 
@@ -583,7 +613,7 @@ async function parseAmazon(page) {
 
                 if (asin) {
                     products.push({
-                        name: nameEl?.textContent?.trim() || 'Unknown',
+                        name: productName,
                         price,
                         originalPrice: originalPrice > price ? originalPrice : null,
                         imageUrl: imgEl?.src || null,
@@ -664,13 +694,72 @@ async function parseTeknosa(page) {
             return 0;
         }
 
-        document.querySelectorAll('.product-list-item, .prd').forEach((card, index) => {
+        // Try multiple container selectors for Teknosa (they change HTML often)
+        const containerSelectors = [
+            '.product-list-item',
+            '.prd',
+            '.product-card',
+            '[data-product-id]',
+            '.plp-product-card',
+            '.product-item'
+        ];
+
+        let cards = [];
+        for (const selector of containerSelectors) {
+            const found = document.querySelectorAll(selector);
+            if (found.length > 0) {
+                cards = found;
+                break;
+            }
+        }
+
+        cards.forEach((card, index) => {
             if (index >= 25) return;
             try {
-                const link = card.querySelector('a');
-                const nameEl = card.querySelector('.prd-name, .product-name');
-                const priceEl = card.querySelector('.prc, .product-price');
-                const originalPriceEl = card.querySelector('.old-prc, .old-price');
+                const link = card.querySelector('a[href*="/p-"], a[href*="urun"], a');
+
+                // Try multiple selectors for product name
+                let productName = '';
+                const nameSelectors = [
+                    '.prd-name',
+                    '.product-name',
+                    '.product-title',
+                    '.title',
+                    '[data-product-name]',
+                    'h3',
+                    'h2',
+                    '.name',
+                    'a[title]'
+                ];
+
+                for (const selector of nameSelectors) {
+                    const el = card.querySelector(selector);
+                    if (el) {
+                        const text = el.textContent?.trim() || el.getAttribute('title') || '';
+                        if (text.length > 5) {
+                            productName = text;
+                            break;
+                        }
+                    }
+                }
+
+                // Fallback: try link title or image alt
+                if (!productName || productName.length < 5) {
+                    const linkTitle = link?.getAttribute('title');
+                    const imgEl = card.querySelector('img');
+                    const imgAlt = imgEl?.getAttribute('alt');
+                    productName = linkTitle || imgAlt || '';
+                }
+
+                // Try multiple selectors for price
+                let priceEl = null;
+                const priceSelectors = ['.prc', '.product-price', '.price', '.current-price', '[data-price]', '.amount'];
+                for (const selector of priceSelectors) {
+                    priceEl = card.querySelector(selector);
+                    if (priceEl && priceEl.textContent?.match(/\d/)) break;
+                }
+
+                const originalPriceEl = card.querySelector('.old-prc, .old-price, .list-price, .was-price, del');
                 const imgEl = card.querySelector('img');
 
                 if (!link || !priceEl) return;
@@ -678,19 +767,20 @@ async function parseTeknosa(page) {
                 const href = link.getAttribute('href') || '';
                 const price = parseTurkishPrice(priceEl.textContent);
 
-                // Skip unreasonable prices
+                // Skip unreasonable prices or no valid name
                 if (!price || price < 10 || price > 500000) return;
+                if (!productName || productName.length < 5) return;
 
                 let originalPrice = null;
                 if (originalPriceEl) {
                     originalPrice = parseTurkishPrice(originalPriceEl.textContent);
                 }
 
-                const productIdMatch = href.match(/-p-(\d+)/);
-                const productId = productIdMatch ? productIdMatch[1] : Math.random().toString(36).slice(2);
+                const productIdMatch = href.match(/-p-(\d+)|\/(\d+)\?|product\/(\d+)/);
+                const productId = productIdMatch ? (productIdMatch[1] || productIdMatch[2] || productIdMatch[3]) : Math.random().toString(36).slice(2);
 
                 products.push({
-                    name: nameEl?.textContent?.trim() || 'Unknown',
+                    name: productName,
                     price,
                     originalPrice: originalPrice > price ? originalPrice : null,
                     imageUrl: imgEl?.src || imgEl?.getAttribute('data-src') || imgEl?.getAttribute('data-lazy') || null,
