@@ -1,0 +1,17 @@
+{
+  "name": "sepetai-crawlee-worker",
+  "version": "1.0.0",
+  "description": "Crawlee + Playwright scraper for SepetAI",
+  "main": "scraper.js",
+  "scripts": {
+    "start": "node scraper.js",
+    "install-browsers": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "crawlee": "^3.11.5",
+    "playwright": "^1.48.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

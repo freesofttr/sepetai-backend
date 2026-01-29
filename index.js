@@ -1,10 +1,14 @@
 const express = require('express');
 const cors = require('cors');
 const db = require('./database');
+const { execSync, spawn } = require('child_process');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const API_KEY = '27c0df8063c38ebc97100e825ff4cd1c';
+
+// Crawlee worker path
+const CRAWLEE_WORKER_PATH = path.join(__dirname, 'crawlee-worker');
 
 app.use(cors());
 app.use(express.json());
@@ -63,130 +67,125 @@ async function preCachePopularSearches() {
     console.log('Pre-caching complete');
 }
 
-// Scrape a single store and return products
+// Available stores for Crawlee
+const CRAWLEE_STORES = ['trendyol', 'hepsiburada', 'amazon', 'n11', 'teknosa', 'vatan', 'mediamarkt', 'pttavm', 'pazarama'];
+
+// Scrape a single store using Crawlee + Playwright
 async function scrapeStore(query, store) {
-    const fetch = (await import('node-fetch')).default;
-
-    // Stores that require JavaScript rendering (headless browser)
-    const jsRenderStores = ['n11', 'vatan', 'mediamarkt', 'pazarama', 'pttavm'];
-
-    const storeConfigs = {
-        trendyol: {
-            url: `https://www.trendyol.com/sr?q=${encodeURIComponent(query)}`,
-            parser: parseTrendyolProducts
-        },
-        hepsiburada: {
-            url: `https://www.hepsiburada.com/ara?q=${encodeURIComponent(query)}`,
-            parser: parseHepsiburadaProducts
-        },
-        n11: {
-            url: `https://www.n11.com/arama?q=${encodeURIComponent(query)}`,
-            parser: parseN11Products
-        },
-        amazon: {
-            url: `https://www.amazon.com.tr/s?k=${encodeURIComponent(query)}`,
-            parser: parseAmazonProducts
-        },
-        pttavm: {
-            url: `https://www.pttavm.com/arama?q=${encodeURIComponent(query)}`,
-            parser: parsePttavmProducts
-        },
-        pazarama: {
-            url: `https://www.pazarama.com/arama?q=${encodeURIComponent(query)}`,
-            parser: parsePazaramaProducts
-        },
-        teknosa: {
-            url: `https://www.teknosa.com/arama/?s=${encodeURIComponent(query)}`,
-            parser: parseTeknosaProducts
-        },
-        vatan: {
-            url: `https://www.vatanbilgisayar.com/arama/${encodeURIComponent(query)}/`,
-            parser: parseVatanProducts
-        },
-        mediamarkt: {
-            url: `https://www.mediamarkt.com.tr/tr/search.html?query=${encodeURIComponent(query)}`,
-            parser: parseMediaMarktProducts
-        },
-        migros: {
-            url: `https://www.migros.com.tr/arama?q=${encodeURIComponent(query)}`,
-            parser: parseMigrosProducts
-        },
-        ciceksepeti: {
-            url: `https://www.ciceksepeti.com/arama?q=${encodeURIComponent(query)}`,
-            parser: parseCicekSepetiProducts
-        }
-    };
-
-    const config = storeConfigs[store];
-    if (!config) return [];
-
-    try {
-        // Add render=true for JavaScript-heavy stores (uses headless browser)
-        const needsRender = jsRenderStores.includes(store);
-        const apiUrl = `https://api.scraperapi.com/?api_key=${API_KEY}&url=${encodeURIComponent(config.url)}&country_code=tr${needsRender ? '&render=true' : ''}`;
-        console.log(`Scraping ${store}: ${query}${needsRender ? ' (JS render)' : ''}`);
-
-        const response = await fetch(apiUrl, { timeout: 60000 }); // Longer timeout for render
-        if (!response.ok) {
-            console.log(`${store} scrape failed: ${response.status}`);
-            return [];
-        }
-
-        const html = await response.text();
-        console.log(`${store}: received ${html.length} bytes`);
-
-        const products = config.parser(html);
-        console.log(`${store}: parsed ${products.length} products`);
-        return products;
-    } catch (e) {
-        console.error(`${store} error: ${e.message}`);
+    if (!CRAWLEE_STORES.includes(store)) {
+        console.log(`${store}: not supported`);
         return [];
     }
+
+    return new Promise((resolve) => {
+        console.log(`Scraping ${store}: ${query} (Playwright)`);
+
+        const startTime = Date.now();
+        let output = '';
+        let errorOutput = '';
+
+        const child = spawn('node', ['scraper.js', store, query], {
+            cwd: CRAWLEE_WORKER_PATH,
+            env: {
+                ...process.env,
+                CRAWLEE_STORAGE_DIR: path.join(CRAWLEE_WORKER_PATH, 'storage'),
+                PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH || undefined
+            },
+            timeout: 90000 // 90 second timeout
+        });
+
+        child.stdout.on('data', (data) => {
+            output += data.toString();
+        });
+
+        child.stderr.on('data', (data) => {
+            errorOutput += data.toString();
+            // Log stderr but don't treat as error (Playwright logs here)
+            const line = data.toString().trim();
+            if (line && !line.includes('browserType.launch')) {
+                console.log(`${store}: ${line}`);
+            }
+        });
+
+        child.on('close', (code) => {
+            const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+
+            if (code !== 0) {
+                console.error(`${store}: process exited with code ${code} (${duration}s)`);
+                resolve([]);
+                return;
+            }
+
+            try {
+                // Extract JSON result between markers
+                const resultMatch = output.match(/RESULT_START\n([\s\S]*?)\nRESULT_END/);
+                if (resultMatch) {
+                    const products = JSON.parse(resultMatch[1]);
+                    console.log(`${store}: ${products.length} products (${duration}s)`);
+                    resolve(products);
+                } else {
+                    console.log(`${store}: no results found (${duration}s)`);
+                    resolve([]);
+                }
+            } catch (e) {
+                console.error(`${store}: parse error - ${e.message}`);
+                resolve([]);
+            }
+        });
+
+        child.on('error', (err) => {
+            console.error(`${store}: spawn error - ${err.message}`);
+            resolve([]);
+        });
+
+        // Timeout handling
+        setTimeout(() => {
+            if (!child.killed) {
+                console.log(`${store}: timeout, killing process`);
+                child.kill('SIGTERM');
+            }
+        }, 85000);
+    });
 }
 
 async function fetchAndCacheSearch(query) {
-    // Scrape stores in smaller batches with longer delays to avoid ScraperAPI rate limiting
+    // With Crawlee/Playwright, we run 2 stores at a time to avoid memory issues
+    // Each browser instance uses ~100-200MB RAM
     const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-    // Batch 1: Main e-commerce (2 at a time)
-    const [trendyolProducts, hepsiburadaProducts] = await Promise.all([
+    console.log(`Starting Crawlee scrape for: "${query}"`);
+    const startTime = Date.now();
+
+    // Batch 1: Main stores (highest priority)
+    const [trendyolProducts, amazonProducts] = await Promise.all([
         scrapeStore(query, 'trendyol'),
-        scrapeStore(query, 'hepsiburada')
+        scrapeStore(query, 'amazon')
     ]);
 
-    await delay(500);
+    await delay(1000); // Give browsers time to cleanup
 
-    // Batch 2: Amazon + PttAvm
-    const [amazonProducts, pttavmProducts] = await Promise.all([
-        scrapeStore(query, 'amazon'),
-        scrapeStore(query, 'pttavm')
-    ]);
-
-    await delay(500);
-
-    // Batch 3: Pazarama + Teknosa
-    const [pazaramaProducts, teknosaProducts] = await Promise.all([
-        scrapeStore(query, 'pazarama'),
+    // Batch 2: Secondary stores
+    const [hepsiburadaProducts, teknosaProducts] = await Promise.all([
+        scrapeStore(query, 'hepsiburada'),
         scrapeStore(query, 'teknosa')
     ]);
 
-    await delay(500);
+    await delay(1000);
 
-    // Batch 4: Vatan + MediaMarkt
-    const [vatanProducts, mediamarktProducts] = await Promise.all([
-        scrapeStore(query, 'vatan'),
-        scrapeStore(query, 'mediamarkt')
+    // Batch 3: More stores
+    const [n11Products, vatanProducts] = await Promise.all([
+        scrapeStore(query, 'n11'),
+        scrapeStore(query, 'vatan')
     ]);
 
-    await delay(500);
+    await delay(1000);
 
-    // Batch 5: N11
-    const n11Products = await scrapeStore(query, 'n11');
-
-    // Skip specialized stores (Migros for groceries, CicekSepeti for flowers/gifts)
-    // They rarely have electronics and cause unnecessary API usage
-    const migrosProducts = [];
-    const ciceksepetiProducts = [];
+    // Batch 4: Remaining stores
+    const [mediamarktProducts, pttavmProducts, pazaramaProducts] = await Promise.all([
+        scrapeStore(query, 'mediamarkt'),
+        scrapeStore(query, 'pttavm'),
+        scrapeStore(query, 'pazarama')
+    ]);
 
     const allProducts = [
         ...trendyolProducts,
@@ -200,7 +199,8 @@ async function fetchAndCacheSearch(query) {
         ...mediamarktProducts
     ];
 
-    console.log(`Total scraped: ${allProducts.length} (T:${trendyolProducts.length} H:${hepsiburadaProducts.length} A:${amazonProducts.length} N:${n11Products.length} P:${pttavmProducts.length} Z:${pazaramaProducts.length} TK:${teknosaProducts.length} V:${vatanProducts.length} MM:${mediamarktProducts.length})`);
+    const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`Total scraped: ${allProducts.length} in ${duration}s (T:${trendyolProducts.length} H:${hepsiburadaProducts.length} A:${amazonProducts.length} N:${n11Products.length} P:${pttavmProducts.length} Z:${pazaramaProducts.length} TK:${teknosaProducts.length} V:${vatanProducts.length} MM:${mediamarktProducts.length})`);
 
     // Apply smart filtering
     const filtered = smartFilterProducts(query, allProducts);
