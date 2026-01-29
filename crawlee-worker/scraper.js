@@ -26,51 +26,68 @@ Configuration.getGlobalConfig().set('storageClientOptions', {
     localDataDirectory: UNIQUE_STORAGE_DIR
 });
 
-// Store configurations
+// Anti-detection: Realistic user agents
+const USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0'
+];
+
+function getRandomUserAgent() {
+    return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+// Random delay helper
+function randomDelay(min = 500, max = 1500) {
+    return Math.floor(Math.random() * (max - min) + min);
+}
+
+// Store configurations with multiple fallback selectors
 const STORE_CONFIGS = {
     trendyol: {
         searchUrl: (q) => `https://www.trendyol.com/sr?q=${encodeURIComponent(q)}`,
-        waitSelector: '.p-card-wrppr',
+        waitSelector: '.p-card-wrppr, .product-card, [class*="product"]',
         parser: parseTrendyol
     },
     hepsiburada: {
         searchUrl: (q) => `https://www.hepsiburada.com/ara?q=${encodeURIComponent(q)}`,
-        waitSelector: '[data-test-id="product-card-item"]',
+        waitSelector: '[data-test-id="product-card-item"], .product-card, .productListContent',
         parser: parseHepsiburada
     },
     amazon: {
         searchUrl: (q) => `https://www.amazon.com.tr/s?k=${encodeURIComponent(q)}`,
-        waitSelector: '[data-component-type="s-search-result"]',
+        waitSelector: '[data-component-type="s-search-result"], .s-result-item',
         parser: parseAmazon
     },
     n11: {
         searchUrl: (q) => `https://www.n11.com/arama?q=${encodeURIComponent(q)}`,
-        waitSelector: '.columnContent',
+        waitSelector: '.columnContent, .listView, .product-card',
         parser: parseN11
     },
     teknosa: {
         searchUrl: (q) => `https://www.teknosa.com/arama/?s=${encodeURIComponent(q)}`,
-        waitSelector: '.product-list-item',
+        waitSelector: '.product-list-item, .prd, .product-card',
         parser: parseTeknosa
     },
     vatan: {
         searchUrl: (q) => `https://www.vatanbilgisayar.com/arama/${encodeURIComponent(q)}/`,
-        waitSelector: '.product-list__content',
+        waitSelector: '.product-list__content, .product-list-item, .product-card',
         parser: parseVatan
     },
     mediamarkt: {
         searchUrl: (q) => `https://www.mediamarkt.com.tr/tr/search.html?query=${encodeURIComponent(q)}`,
-        waitSelector: '[data-test="mms-product-card"]',
+        waitSelector: '[data-test="mms-product-card"], .product-card, .product-tile',
         parser: parseMediaMarkt
     },
     pttavm: {
         searchUrl: (q) => `https://www.pttavm.com/arama?q=${encodeURIComponent(q)}`,
-        waitSelector: '.product-card',
+        waitSelector: '.product-card, .product-item, .urun-card',
         parser: parsePttAvm
     },
     pazarama: {
         searchUrl: (q) => `https://www.pazarama.com/arama?q=${encodeURIComponent(q)}`,
-        waitSelector: '.product-card',
+        waitSelector: '.product-card, .ProductCard, [class*="product"]',
         parser: parsePazarama
     }
 };
@@ -79,20 +96,39 @@ const STORE_CONFIGS = {
 async function parseTrendyol(page) {
     return await page.evaluate(() => {
         const products = [];
-        document.querySelectorAll('.p-card-wrppr').forEach((card, index) => {
+        // Try multiple selectors for Trendyol products
+        const productCards = document.querySelectorAll('.p-card-wrppr, .p-card-chldrn-cntnr, [class*="ProductCard"], .product-card');
+
+        productCards.forEach((card, index) => {
             if (index >= 25) return;
             try {
-                const link = card.querySelector('a');
-                const nameEl = card.querySelector('.prdct-desc-cntnr-name');
-                const priceEl = card.querySelector('.prc-box-dscntd') || card.querySelector('.prc-box-sllng');
-                const originalPriceEl = card.querySelector('.prc-box-orgnl');
+                const link = card.querySelector('a[href*="/p-"]') || card.querySelector('a');
+                // Multiple selector options for product name
+                const nameEl = card.querySelector('.prdct-desc-cntnr-name, .product-name, [class*="productName"], .prdct-desc-cntnr span');
+                // Multiple selector options for price
+                const priceEl = card.querySelector('.prc-box-dscntd, .prc-box-sllng, [class*="discountedPrice"], [class*="sellingPrice"], .price');
+                const originalPriceEl = card.querySelector('.prc-box-orgnl, [class*="originalPrice"], .old-price');
                 const imgEl = card.querySelector('img');
 
-                if (!link || !priceEl) return;
+                if (!link) return;
 
                 const href = link.getAttribute('href') || '';
-                const priceText = priceEl.textContent || '';
-                const price = parseFloat(priceText.replace(/[^\d,]/g, '').replace(',', '.'));
+
+                // Get price from various elements
+                let price = 0;
+                if (priceEl) {
+                    const priceText = priceEl.textContent || '';
+                    price = parseFloat(priceText.replace(/[^\d,]/g, '').replace(',', '.'));
+                }
+
+                // Fallback: search for price in card text
+                if (!price || price === 0) {
+                    const cardText = card.textContent || '';
+                    const priceMatch = cardText.match(/(\d{1,3}(?:\.\d{3})*,\d{2})\s*TL/);
+                    if (priceMatch) {
+                        price = parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.'));
+                    }
+                }
 
                 let originalPrice = null;
                 if (originalPriceEl) {
@@ -123,20 +159,37 @@ async function parseTrendyol(page) {
 async function parseHepsiburada(page) {
     return await page.evaluate(() => {
         const products = [];
-        document.querySelectorAll('[data-test-id="product-card-item"]').forEach((card, index) => {
+        // Multiple selectors for Hepsiburada
+        const productCards = document.querySelectorAll('[data-test-id="product-card-item"], .product-card, .productListContent li, [class*="ProductCard"]');
+
+        productCards.forEach((card, index) => {
             if (index >= 25) return;
             try {
-                const link = card.querySelector('a');
-                const nameEl = card.querySelector('[data-test-id="product-card-name"]');
-                const priceEl = card.querySelector('[data-test-id="price-current-price"]');
-                const originalPriceEl = card.querySelector('[data-test-id="price-old-price"]');
+                const link = card.querySelector('a[href*="-p-"]') || card.querySelector('a');
+                const nameEl = card.querySelector('[data-test-id="product-card-name"], .product-title, [class*="productName"]');
+                const priceEl = card.querySelector('[data-test-id="price-current-price"], .product-price, [class*="currentPrice"]');
+                const originalPriceEl = card.querySelector('[data-test-id="price-old-price"], .old-price, [class*="oldPrice"]');
                 const imgEl = card.querySelector('img');
 
-                if (!link || !priceEl) return;
+                if (!link) return;
 
                 const href = link.getAttribute('href') || '';
-                const priceText = priceEl.textContent || '';
-                const price = parseFloat(priceText.replace(/[^\d,]/g, '').replace(',', '.'));
+
+                // Get price from various elements
+                let price = 0;
+                if (priceEl) {
+                    const priceText = priceEl.textContent || '';
+                    price = parseFloat(priceText.replace(/[^\d,]/g, '').replace(',', '.'));
+                }
+
+                // Fallback: search for price in card text
+                if (!price || price === 0) {
+                    const cardText = card.textContent || '';
+                    const priceMatch = cardText.match(/(\d{1,3}(?:\.\d{3})*,\d{2})\s*TL/);
+                    if (priceMatch) {
+                        price = parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.'));
+                    }
+                }
 
                 let originalPrice = null;
                 if (originalPriceEl) {
@@ -484,11 +537,15 @@ async function scrapeStore(store, query) {
     }
 
     const products = [];
+    const userAgent = getRandomUserAgent();
 
     const crawler = new PlaywrightCrawler({
         maxConcurrency: 1,
-        requestHandlerTimeoutSecs: 45,
-        navigationTimeoutSecs: 30,
+        maxRequestRetries: 2,
+        requestHandlerTimeoutSecs: 50,
+        navigationTimeoutSecs: 35,
+        // Disable automatic status code checking - we'll handle it ourselves
+        additionalMimeTypes: ['text/html'],
         launchContext: {
             launchOptions: {
                 headless: true,
@@ -496,36 +553,105 @@ async function scrapeStore(store, query) {
                     '--disable-dev-shm-usage',
                     '--no-sandbox',
                     '--disable-gpu',
-                    '--disable-setuid-sandbox'
+                    '--disable-setuid-sandbox',
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-infobars',
+                    '--window-size=1920,1080'
                 ]
             }
         },
+        browserPoolOptions: {
+            useFingerprints: false,
+            preLaunchHooks: [
+                async (pageId, launchContext) => {
+                    launchContext.launchOptions = launchContext.launchOptions || {};
+                }
+            ]
+        },
+        preNavigationHooks: [
+            async ({ page }) => {
+                // Set realistic viewport
+                await page.setViewportSize({ width: 1920, height: 1080 });
+
+                // Set user agent
+                await page.setExtraHTTPHeaders({
+                    'User-Agent': userAgent,
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                    'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache',
+                    'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                    'Sec-Ch-Ua-Mobile': '?0',
+                    'Sec-Ch-Ua-Platform': '"Windows"',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Sec-Fetch-User': '?1',
+                    'Upgrade-Insecure-Requests': '1'
+                });
+
+                // Stealth: Override webdriver detection
+                await page.addInitScript(() => {
+                    // Remove webdriver property
+                    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+
+                    // Mock plugins
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3, 4, 5]
+                    });
+
+                    // Mock languages
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['tr-TR', 'tr', 'en-US', 'en']
+                    });
+
+                    // Mock chrome runtime
+                    window.chrome = { runtime: {} };
+
+                    // Mock permissions
+                    const originalQuery = window.navigator.permissions.query;
+                    window.navigator.permissions.query = (parameters) =>
+                        parameters.name === 'notifications'
+                            ? Promise.resolve({ state: Notification.permission })
+                            : originalQuery(parameters);
+                });
+            }
+        ],
         async requestHandler({ page, request }) {
             console.log(`Scraping ${store}: ${request.url}`);
 
+            // Random delay before actions (anti-bot)
+            await page.waitForTimeout(randomDelay(1000, 2000));
+
             // Wait for products to load
             try {
-                await page.waitForSelector(config.waitSelector, { timeout: 15000 });
+                await page.waitForSelector(config.waitSelector, { timeout: 20000 });
             } catch (e) {
                 console.log(`${store}: Selector not found, trying to parse anyway`);
             }
 
             // Additional wait for JS rendering
-            await page.waitForTimeout(2000);
+            await page.waitForTimeout(randomDelay(1500, 2500));
 
-            // Scroll to trigger lazy loading
+            // Scroll to trigger lazy loading - more human-like
             await page.evaluate(() => {
-                window.scrollTo(0, document.body.scrollHeight / 2);
+                window.scrollTo({ top: document.body.scrollHeight / 3, behavior: 'smooth' });
             });
-            await page.waitForTimeout(1000);
+            await page.waitForTimeout(randomDelay(800, 1200));
+
+            await page.evaluate(() => {
+                window.scrollTo({ top: document.body.scrollHeight / 2, behavior: 'smooth' });
+            });
+            await page.waitForTimeout(randomDelay(500, 1000));
 
             // Parse products
             const parsed = await config.parser(page);
             products.push(...parsed);
             console.log(`${store}: Found ${parsed.length} products`);
         },
-        failedRequestHandler({ request }) {
-            console.error(`${store}: Request failed: ${request.url}`);
+        failedRequestHandler({ request, error }) {
+            console.error(`${store}: Request failed: ${request.url} - ${error?.message || 'Unknown error'}`);
         }
     });
 
