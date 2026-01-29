@@ -67,6 +67,9 @@ async function preCachePopularSearches() {
 async function scrapeStore(query, store) {
     const fetch = (await import('node-fetch')).default;
 
+    // Stores that require JavaScript rendering (headless browser)
+    const jsRenderStores = ['n11', 'vatan', 'mediamarkt', 'pazarama', 'pttavm'];
+
     const storeConfigs = {
         trendyol: {
             url: `https://www.trendyol.com/sr?q=${encodeURIComponent(query)}`,
@@ -118,16 +121,20 @@ async function scrapeStore(query, store) {
     if (!config) return [];
 
     try {
-        const apiUrl = `https://api.scraperapi.com/?api_key=${API_KEY}&url=${encodeURIComponent(config.url)}&country_code=tr`;
-        console.log(`Scraping ${store}: ${query}`);
+        // Add render=true for JavaScript-heavy stores (uses headless browser)
+        const needsRender = jsRenderStores.includes(store);
+        const apiUrl = `https://api.scraperapi.com/?api_key=${API_KEY}&url=${encodeURIComponent(config.url)}&country_code=tr${needsRender ? '&render=true' : ''}`;
+        console.log(`Scraping ${store}: ${query}${needsRender ? ' (JS render)' : ''}`);
 
-        const response = await fetch(apiUrl, { timeout: 30000 });
+        const response = await fetch(apiUrl, { timeout: 60000 }); // Longer timeout for render
         if (!response.ok) {
             console.log(`${store} scrape failed: ${response.status}`);
             return [];
         }
 
         const html = await response.text();
+        console.log(`${store}: received ${html.length} bytes`);
+
         const products = config.parser(html);
         console.log(`${store}: parsed ${products.length} products`);
         return products;
@@ -1191,14 +1198,18 @@ function parseHepsiburadaProducts(html) {
 function parseN11Products(html) {
     const products = [];
 
-    // N11 product links: href="https://www.n11.com/urun/[product-slug]/[id]"
-    const productLinkRegex = /href="(https:\/\/www\.n11\.com\/urun\/([^"]+))"/gi;
+    // N11 uses multiple URL patterns:
+    // - /urun/[slug]/[id]
+    // - /magaza/[seller]/urun/[slug]
+    // - Product cards with data-product-id
+    const productLinkRegex = /href="(https:\/\/www\.n11\.com\/(?:urun|magaza\/[^/]+\/urun)\/([^"]+))"/gi;
     const productLinks = [];
     let linkMatch;
 
     while ((linkMatch = productLinkRegex.exec(html)) !== null) {
         const slug = linkMatch[2];
         if (productLinks.some(p => p.slug === slug)) continue;
+        if (slug.includes('?') || slug.includes('#')) continue; // Skip query strings
         productLinks.push({
             href: linkMatch[1],
             slug,
@@ -1206,43 +1217,52 @@ function parseN11Products(html) {
         });
     }
 
+    console.log(`N11: found ${productLinks.length} product links`);
+
     for (let i = 0; i < productLinks.length && products.length < 20; i++) {
         const link = productLinks[i];
-        const contentStart = Math.max(0, link.position - 500);
+        const contentStart = Math.max(0, link.position - 1000);
         const contentEnd = productLinks[i + 1]?.position || contentStart + 8000;
         const cardContent = html.substring(contentStart, Math.min(contentEnd, contentStart + 8000));
 
-        // Extract name
+        // Extract name - N11 uses various class patterns
         const namePatterns = [
             /class="[^"]*productName[^"]*"[^>]*>([^<]+)/i,
+            /class="[^"]*prdName[^"]*"[^>]*>([^<]+)/i,
             /class="[^"]*product-title[^"]*"[^>]*>([^<]+)/i,
-            /title="([^"]{10,})"/i
+            /class="[^"]*pro-name[^"]*"[^>]*>([^<]+)/i,
+            /data-product-name="([^"]+)"/i,
+            /title="([^"]{15,100})"/i
         ];
         let name = null;
         for (const pattern of namePatterns) {
             const m = cardContent.match(pattern);
-            if (m) { name = m[1].trim(); break; }
+            if (m && m[1].trim().length > 5) { name = m[1].trim(); break; }
         }
 
         if (!name) {
             // Extract from slug
-            const slugParts = link.slug.split('/')[0];
-            name = slugParts.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+            const slugParts = link.slug.split('/')[0].split('?')[0];
+            if (slugParts.length > 5) {
+                name = slugParts.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+            }
         }
 
-        // Extract price
+        // Extract price - N11 uses various price patterns
         let price = null;
         const pricePatterns = [
-            /class="[^"]*newPrice[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            /class="[^"]*price[^"]*"[^>]*ins[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            /class="[^"]*price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            />([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?)\s*TL</i
+            /class="[^"]*newPrice[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            /class="[^"]*priceContainer[^"]*"[^>]*>[\s\S]*?([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            /class="[^"]*price[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            /data-price="([0-9.]+)"/i,
+            />([0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{2})?)\s*(?:TL|₺)</i,
+            /([0-9]{2,3}\.[0-9]{3}(?:\.[0-9]{3})?(?:,[0-9]{2})?)\s*(?:TL|₺)/
         ];
         for (const pattern of pricePatterns) {
             const m = cardContent.match(pattern);
             if (m) {
                 price = parseFloat(m[1].replace(/\./g, '').replace(',', '.'));
-                if (price >= 1 && price <= 999999) break;
+                if (price >= 100 && price <= 999999) break;
                 price = null;
             }
         }
@@ -1250,9 +1270,10 @@ function parseN11Products(html) {
         // Extract original price
         let originalPrice = null;
         const orgPatterns = [
-            /class="[^"]*oldPrice[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            /class="[^"]*price[^"]*"[^>]*del[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL/i,
-            /<del[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*TL\s*<\/del>/i
+            /class="[^"]*oldPrice[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            /class="[^"]*strikePrice[^"]*"[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)/i,
+            /<del[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)\s*<\/del>/i,
+            /<s[^>]*>\s*([0-9.]+(?:,[0-9]{2})?)\s*(?:TL|₺)\s*<\/s>/i
         ];
         for (const pattern of orgPatterns) {
             const m = cardContent.match(pattern);
@@ -1262,17 +1283,27 @@ function parseN11Products(html) {
             }
         }
 
-        // Extract image
+        // Extract image - try multiple patterns
         let imageUrl = null;
-        const imgMatch = cardContent.match(/src="(https:\/\/[^"]*n11[^"]*\.(?:jpg|png|webp)[^"]*)"/i)
-            || cardContent.match(/data-src="(https:\/\/[^"]*\.(?:jpg|png|webp)[^"]*)"/i);
-        if (imgMatch) imageUrl = imgMatch[1];
+        const imgPatterns = [
+            /src="(https:\/\/[^"]*n11[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i,
+            /data-src="(https:\/\/[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i,
+            /data-original="(https:\/\/[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i,
+            /src="(https:\/\/[^"]+\/(?:urunler|products?|images?)[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)"/i
+        ];
+        for (const pattern of imgPatterns) {
+            const m = cardContent.match(pattern);
+            if (m && m[1] && !m[1].includes('logo') && !m[1].includes('icon')) {
+                imageUrl = m[1];
+                break;
+            }
+        }
 
-        if (!name || !price || price < 1) continue;
+        if (!name || !price || price < 100) continue;
 
         // Extract product ID from URL
-        const idMatch = link.slug.match(/(\d+)$/);
-        const productId = idMatch ? idMatch[1] : link.slug.replace(/\//g, '-');
+        const idMatch = link.slug.match(/(\d+)(?:$|\/|\?)/);
+        const productId = idMatch ? idMatch[1] : link.slug.replace(/[\/\?]/g, '-').slice(0, 50);
 
         products.push({
             name,
