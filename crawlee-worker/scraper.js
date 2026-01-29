@@ -255,6 +255,18 @@ async function parseTrendyol(page) {
         const products = [];
         const seenIds = new Set();
 
+        // Helper: Parse Turkish price format (1.234,56 or 1234,56)
+        function parseTurkishPrice(text) {
+            if (!text) return 0;
+            // Remove everything except digits, dots, and commas
+            let cleaned = text.replace(/[^\d.,]/g, '');
+            // Turkish format: 50.299,00 (dot = thousands, comma = decimal)
+            // Remove thousand separators (dots) and convert comma to dot
+            cleaned = cleaned.replace(/\.(?=\d{3})/g, '').replace(',', '.');
+            const price = parseFloat(cleaned);
+            return isNaN(price) ? 0 : price;
+        }
+
         // Strategy 1: Find all product links first, then work backwards to find cards
         const productLinks = document.querySelectorAll('a[href*="-p-"]');
 
@@ -274,36 +286,47 @@ async function parseTrendyol(page) {
                 let card = link.closest('[class*="p-card"], [class*="product"], [class*="prdct"]') || link.parentElement?.parentElement;
                 if (!card) card = link;
 
-                // Find price - try multiple patterns
+                // Find price - be specific with Trendyol selectors
                 let price = 0;
-                const priceSelectors = [
-                    '.prc-box-dscntd', '.prc-box-sllng', '[class*="prc"]',
-                    '[class*="price"]', '[class*="Price"]', '.price'
-                ];
 
-                for (const sel of priceSelectors) {
-                    const priceEl = card.querySelector(sel);
-                    if (priceEl) {
-                        const priceText = priceEl.textContent || '';
-                        const parsed = parseFloat(priceText.replace(/[^\d,]/g, '').replace(',', '.'));
-                        if (parsed > 0) {
+                // Try specific Trendyol price selectors first
+                const discountedPrice = card.querySelector('.prc-box-dscntd');
+                const sellingPrice = card.querySelector('.prc-box-sllng');
+
+                if (discountedPrice) {
+                    price = parseTurkishPrice(discountedPrice.textContent);
+                } else if (sellingPrice) {
+                    price = parseTurkishPrice(sellingPrice.textContent);
+                }
+
+                // Fallback: Look for any price-like element
+                if (!price || price < 100) {
+                    const priceElements = card.querySelectorAll('[class*="prc"], [class*="price"]');
+                    for (const el of priceElements) {
+                        const parsed = parseTurkishPrice(el.textContent);
+                        // Take the largest reasonable price (ignore small values like shipping)
+                        if (parsed > price && parsed >= 100) {
                             price = parsed;
-                            break;
                         }
                     }
                 }
 
-                // Fallback: regex search in card text
-                if (!price) {
+                // Final fallback: regex search in card text for price pattern
+                if (!price || price < 100) {
                     const cardText = card.textContent || '';
-                    // Match Turkish price format: 1.234,56 TL or 1234,56 TL
-                    const priceMatch = cardText.match(/(\d{1,3}(?:\.\d{3})*,\d{2})\s*TL/);
-                    if (priceMatch) {
-                        price = parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.'));
+                    // Match Turkish price format: 1.234,56 TL or 50.299,00 TL
+                    const priceMatches = cardText.match(/(\d{1,3}(?:\.\d{3})+,\d{2})\s*TL/g);
+                    if (priceMatches) {
+                        // Take the largest price found
+                        for (const match of priceMatches) {
+                            const parsed = parseTurkishPrice(match);
+                            if (parsed > price) price = parsed;
+                        }
                     }
                 }
 
-                if (!price || price <= 0) return;
+                // Skip products with unreasonably low prices (likely parsing errors)
+                if (!price || price < 100) return;
 
                 // Find product name
                 let name = '';
@@ -327,12 +350,11 @@ async function parseTrendyol(page) {
                 const imgEl = card.querySelector('img');
                 let imageUrl = imgEl?.src || imgEl?.getAttribute('data-src') || imgEl?.getAttribute('data-original') || null;
 
-                // Find original price
+                // Find original price (use same Turkish price parser)
                 let originalPrice = null;
                 const origPriceEl = card.querySelector('.prc-box-orgnl, [class*="originalPrice"], [class*="old-price"]');
                 if (origPriceEl) {
-                    const origText = origPriceEl.textContent || '';
-                    const parsed = parseFloat(origText.replace(/[^\d,]/g, '').replace(',', '.'));
+                    const parsed = parseTurkishPrice(origPriceEl.textContent);
                     if (parsed > price) originalPrice = parsed;
                 }
 
