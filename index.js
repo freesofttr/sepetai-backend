@@ -896,9 +896,16 @@ function classifyProduct(product, intent) {
     // Always check query keyword relevance (works for ALL searches)
     const queryRelevance = calculateQueryRelevance(nameLower, intent.queryKeywords);
 
-    // Only filter if NO query keywords match at all AND query has multiple keywords
-    // Single keyword searches should be more permissive
-    if (intent.queryKeywords.length > 1 && queryRelevance === 0) {
+    // For GENERAL searches (category === 'general'), be more lenient
+    // Don't filter by queryRelevance for general searches - trust the scraper
+    if (intent.category === 'general') {
+        const confidence = 0.5 + (queryRelevance * 0.5);
+        return { type: 'Ana Ürün', confidence, isRelevant: true };
+    }
+
+    // Only filter if NO query keywords match AND query has 3+ keywords (very specific search)
+    // Allow products through if they have at least 1 keyword match
+    if (intent.queryKeywords.length >= 3 && queryRelevance === 0) {
         return { type: 'Alakasız', confidence: 0.8, isRelevant: false };
     }
 
@@ -930,12 +937,6 @@ function classifyProduct(product, intent) {
 
         // Model matches and not an accessory - this is the actual product
         return { type: 'Ana Ürün', confidence: 0.95, isRelevant: true };
-    }
-
-    // For general searches, include everything that has at least some relevance
-    if (intent.category === 'general') {
-        const confidence = 0.5 + (queryRelevance * 0.5);
-        return { type: 'Ana Ürün', confidence, isRelevant: true };
     }
 
     // LESS AGGRESSIVE FILTERING: Only filter obvious accessories
@@ -999,6 +1000,19 @@ function smartFilterProducts(query, products) {
     const intent = analyzeSearchIntent(query);
     console.log(`Search intent: ${intent.intentLabel} (${intent.category}), keywords: [${intent.queryKeywords.join(', ')}], model: ${intent.modelQuery ? `${intent.modelQuery.brand} ${intent.modelQuery.model}` : 'none'}`);
 
+    // DEBUG: Show sample product names from each store BEFORE filtering
+    const samplesByStore = {};
+    products.forEach(p => {
+        if (!samplesByStore[p.store]) samplesByStore[p.store] = [];
+        if (samplesByStore[p.store].length < 2) {
+            samplesByStore[p.store].push(p.name?.substring(0, 60) || 'NO_NAME');
+        }
+    });
+    console.log('DEBUG - Sample product names by store (before filter):');
+    for (const [store, samples] of Object.entries(samplesByStore)) {
+        console.log(`  ${store}: ${samples.map(s => `"${s}"`).join(', ')}`);
+    }
+
     const analyzed = products.map(product => {
         const classification = classifyProduct(product, intent);
         const discount = analyzeDiscount(product);
@@ -1017,19 +1031,64 @@ function smartFilterProducts(query, products) {
     });
 
     // Filter: relevant products, sorted by price (cheapest first)
-    const relevant = analyzed
+    let relevant = analyzed
         .filter(p => p.isRelevant)
-        .sort((a, b) => {
-            // Primary sort: price ascending (cheapest first)
-            return a.price - b.price;
-        })
+        .sort((a, b) => a.price - b.price);
+
+    // SAFEGUARD: If a store had products but ALL were filtered out, include cheapest ones
+    // This prevents losing entire stores due to overly strict filtering
+    const originalByStore = {};
+    const relevantByStore = {};
+    analyzed.forEach(p => {
+        originalByStore[p.store] = (originalByStore[p.store] || 0) + 1;
+    });
+    relevant.forEach(p => {
+        relevantByStore[p.store] = (relevantByStore[p.store] || 0) + 1;
+    });
+
+    for (const [store, originalCount] of Object.entries(originalByStore)) {
+        const relevantCount = relevantByStore[store] || 0;
+        if (originalCount > 0 && relevantCount === 0) {
+            // This store lost ALL products - include top 10 cheapest
+            console.log(`SAFEGUARD: ${store} lost all ${originalCount} products, adding cheapest 10`);
+            const storeProducts = analyzed
+                .filter(p => p.store === store)
+                .sort((a, b) => a.price - b.price)
+                .slice(0, 10)
+                .map(p => ({ ...p, classification: 'Fiyat Karşılaştırma', isRelevant: true }));
+            relevant = [...relevant, ...storeProducts];
+        }
+    }
+
+    // Sort again and remove internal fields
+    relevant = relevant
+        .sort((a, b) => a.price - b.price)
         .map(p => {
-            // Remove internal field from response
             const { _queryRelevance, ...rest } = p;
             return rest;
         });
 
     const removed = analyzed.filter(p => !p.isRelevant);
+
+    // DEBUG: Log removed products by store with sample names
+    const removedByStore = {};
+    removed.forEach(p => {
+        if (!removedByStore[p.store]) removedByStore[p.store] = [];
+        if (removedByStore[p.store].length < 3) { // Sample 3 per store
+            removedByStore[p.store].push({
+                name: p.name?.substring(0, 50),
+                classification: p.classification,
+                relevance: p._queryRelevance
+            });
+        }
+    });
+    if (removed.length > 0) {
+        console.log('DEBUG - Removed products by store:');
+        for (const [store, samples] of Object.entries(removedByStore)) {
+            console.log(`  ${store}: ${removed.filter(p => p.store === store).length} removed`);
+            samples.forEach(s => console.log(`    - "${s.name}" (${s.classification}, rel:${s.relevance?.toFixed(2)})`));
+        }
+    }
 
     // Log per-store breakdown
     const storeBreakdown = {};
