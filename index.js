@@ -319,6 +319,20 @@ app.get('/', (req, res) => {
     res.json({ status: 'ok', message: 'SepetAI Backend', version: '2.0', features: ['multi-store', 'price-history', 'ai-analysis'] });
 });
 
+// Clear cache endpoint (for debugging/testing)
+app.get('/api/cache/clear', (req, res) => {
+    const query = req.query.q?.toLowerCase();
+    if (query) {
+        const cacheKey = `search:${query}`;
+        cache.delete(cacheKey);
+        res.json({ status: 'ok', message: `Cache cleared for: ${query}` });
+    } else {
+        const size = cache.size;
+        cache.clear();
+        res.json({ status: 'ok', message: `All cache cleared (${size} entries)` });
+    }
+});
+
 // ==========================================
 // PRICE HISTORY ENDPOINTS
 // ==========================================
