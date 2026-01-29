@@ -710,8 +710,9 @@ function classifyProduct(product, intent) {
     // Always check query keyword relevance (works for ALL searches)
     const queryRelevance = calculateQueryRelevance(nameLower, intent.queryKeywords);
 
-    // If no query keywords match at all, it's likely irrelevant
-    if (intent.queryKeywords.length > 0 && queryRelevance === 0) {
+    // Only filter if NO query keywords match at all AND query has multiple keywords
+    // Single keyword searches should be more permissive
+    if (intent.queryKeywords.length > 1 && queryRelevance === 0) {
         return { type: 'Alakasız', confidence: 0.8, isRelevant: false };
     }
 
@@ -720,6 +721,12 @@ function classifyProduct(product, intent) {
         if (!matchesSpecificModel(product.name, intent.modelQuery)) {
             return { type: 'Farklı Model', confidence: 0.9, isRelevant: false };
         }
+    }
+
+    // For general searches, include everything that has at least some relevance
+    if (intent.category === 'general') {
+        const confidence = 0.5 + (queryRelevance * 0.5);
+        return { type: 'Ana Ürün', confidence, isRelevant: true };
     }
 
     // Check if product name contains accessory patterns
@@ -731,17 +738,18 @@ function classifyProduct(product, intent) {
     // Check if it has main product indicators
     const hasMainIndicator = intent.mainProductIndicators.some(ind => nameLower.includes(ind));
 
-    if (intent.category === 'general') {
-        // For general searches, use query keyword match as confidence
-        const confidence = 0.5 + (queryRelevance * 0.5); // 0.5 to 1.0
-        return { type: 'Ana Ürün', confidence, isRelevant: true };
-    }
-
+    // LESS AGGRESSIVE FILTERING: Only filter obvious accessories
+    // Include product if it has main indicators OR if name is descriptive enough
     if (matchedExcludeKeyword || matchedAccessoryPattern) {
-        // If it ALSO has main product indicators AND the name is long enough
-        if (hasMainIndicator && nameLower.length > 40 && !matchedAccessoryPattern) {
+        // If it has main product indicators, keep it
+        if (hasMainIndicator) {
+            return { type: 'Ana Ürün', confidence: 0.7, isRelevant: true };
+        }
+        // If query relevance is high (50%+ keywords match), keep it
+        if (queryRelevance >= 0.5) {
             return { type: 'Ana Ürün', confidence: 0.6, isRelevant: true };
         }
+        // Only exclude if it's clearly just an accessory
         return { type: 'Aksesuar', confidence: 0.85, isRelevant: false };
     }
 
@@ -749,7 +757,7 @@ function classifyProduct(product, intent) {
         return { type: 'Ana Ürün', confidence: 0.9, isRelevant: true };
     }
 
-    // Default - use query relevance for confidence
+    // Default - include with query relevance as confidence
     const confidence = 0.5 + (queryRelevance * 0.3);
     return { type: 'Ana Ürün', confidence, isRelevant: true };
 }
