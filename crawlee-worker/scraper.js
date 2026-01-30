@@ -238,12 +238,112 @@ function randomDelay(min = 300, max = 800) {
     return Math.floor(Math.random() * (max - min) + min);
 }
 
+// Sites that need extra anti-bot handling
+const HIGH_PROTECTION_SITES = ['hepsiburada', 'n11', 'mediamarkt', 'vatan'];
+
+// Human-like typing simulation
+async function humanType(page, selector, text) {
+    await page.click(selector);
+    await page.waitForTimeout(randomDelay(200, 400));
+    for (const char of text) {
+        await page.keyboard.type(char, { delay: randomDelay(50, 150) });
+    }
+}
+
+// Accept cookie consent popups
+async function handleCookieConsent(page) {
+    const cookieSelectors = [
+        '#onetrust-accept-btn-handler',
+        '[data-testid="GDPR-accept"]',
+        '.cookie-consent-accept',
+        '#accept-cookie',
+        '.accept-cookies',
+        'button[class*="accept"]',
+        'button[class*="cookie"]',
+        '[class*="CookieConsent"] button',
+        '#CybotCookiebotDialogBodyButtonAccept',
+        '.cc-accept',
+        '[data-action="accept"]'
+    ];
+
+    for (const selector of cookieSelectors) {
+        try {
+            const btn = await page.$(selector);
+            if (btn) {
+                await btn.click();
+                await page.waitForTimeout(500);
+                console.log('Cookie consent accepted');
+                return true;
+            }
+        } catch (e) {}
+    }
+    return false;
+}
+
+// Detect if page is blocked by bot protection
+async function detectBotBlock(page) {
+    return await page.evaluate(() => {
+        const bodyText = document.body?.innerText?.toLowerCase() || '';
+        const title = document.title?.toLowerCase() || '';
+
+        // Common bot protection indicators
+        const blockIndicators = [
+            'robot değilim',
+            'ben robot değilim',
+            'captcha',
+            'erişim engellendi',
+            'access denied',
+            'blocked',
+            'bot detected',
+            'unusual traffic',
+            'please verify',
+            'security check',
+            'datadome',
+            'challenge',
+            'checking your browser',
+            'please wait'
+        ];
+
+        for (const indicator of blockIndicators) {
+            if (bodyText.includes(indicator) || title.includes(indicator)) {
+                return { blocked: true, reason: indicator };
+            }
+        }
+
+        // Check for CAPTCHA iframes
+        const captchaIframes = document.querySelectorAll('iframe[src*="captcha"], iframe[src*="recaptcha"], iframe[src*="hcaptcha"]');
+        if (captchaIframes.length > 0) {
+            return { blocked: true, reason: 'CAPTCHA iframe detected' };
+        }
+
+        // Check for DataDome specific
+        const datadome = document.querySelector('[class*="datadome"], #datadome');
+        if (datadome) {
+            return { blocked: true, reason: 'DataDome detected' };
+        }
+
+        return { blocked: false };
+    });
+}
+
+// Block fingerprinting and tracking scripts
+const BLOCKED_URLS = [
+    '**/datadome.co/**',
+    '**/cdn.datadome.**',
+    '**/fingerprint**',
+    '**/imperva/**',
+    '**/distil/**',
+    '**/bot-detect**',
+    '**/recaptcha/**',
+    '**/hcaptcha/**'
+];
+
 // Store configurations with multiple fallback selectors
 const STORE_CONFIGS = {
     trendyol: {
-        // Sort by price descending to get actual products (phones) before accessories (cases)
-        searchUrl: (q) => `https://www.trendyol.com/sr?q=${encodeURIComponent(q)}&sst=PRICE_BY_DESC`,
-        waitSelector: '.p-card-wrppr, .product-card, [class*="product"]',
+        // Sort by best match for relevance
+        searchUrl: (q) => `https://www.trendyol.com/sr?q=${encodeURIComponent(q)}`,
+        waitSelector: '.p-card-wrppr, .p-card-chldrn-cntnr, .product-card, [data-id]',
         parser: parseTrendyol
     },
     hepsiburada: {
@@ -319,13 +419,174 @@ async function parseTrendyol(page) {
             return 0;
         }
 
-        // Strategy 1: Find all product links first, then work backwards to find cards
-        const productLinks = document.querySelectorAll('a[href*="-p-"]');
+        // STRATEGY 0: Try to extract from JSON-LD structured data first (most reliable)
+        try {
+            const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
+            for (const script of jsonLdScripts) {
+                try {
+                    const data = JSON.parse(script.textContent);
+                    // Check for ItemList (search results)
+                    if (data['@type'] === 'ItemList' && data.itemListElement) {
+                        console.log('Trendyol: Found JSON-LD ItemList with', data.itemListElement.length, 'items');
+                        data.itemListElement.forEach((item, i) => {
+                            if (products.length >= 30) return;
+                            const product = item.item || item;
+                            if (product && product.offers) {
+                                const urlMatch = (product.url || product['@id'] || '').match(/-p-(\d+)/);
+                                if (urlMatch && !seenIds.has(urlMatch[1])) {
+                                    seenIds.add(urlMatch[1]);
+                                    const price = parseFloat(product.offers?.price || product.offers?.lowPrice) || 0;
+                                    if (price >= 10 && price <= 500000) {
+                                        products.push({
+                                            name: product.name || 'Trendyol Ürünü',
+                                            price,
+                                            originalPrice: null,
+                                            imageUrl: product.image || null,
+                                            productUrl: product.url || 'https://www.trendyol.com' + (product['@id'] || ''),
+                                            productId: 'ty-' + urlMatch[1],
+                                            store: 'Trendyol'
+                                        });
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    // Check for single Product
+                    if (data['@type'] === 'Product' && data.offers) {
+                        const urlMatch = (data.url || window.location.href).match(/-p-(\d+)/);
+                        if (urlMatch && !seenIds.has(urlMatch[1])) {
+                            seenIds.add(urlMatch[1]);
+                            const price = parseFloat(data.offers?.price || data.offers?.lowPrice) || 0;
+                            if (price >= 10 && price <= 500000) {
+                                products.push({
+                                    name: data.name || 'Trendyol Ürünü',
+                                    price,
+                                    originalPrice: null,
+                                    imageUrl: data.image || null,
+                                    productUrl: data.url || window.location.href,
+                                    productId: 'ty-' + urlMatch[1],
+                                    store: 'Trendyol'
+                                });
+                            }
+                        }
+                    }
+                } catch (e) {}
+            }
+            if (products.length > 0) {
+                console.log('Trendyol: JSON-LD extracted', products.length, 'products');
+            }
+        } catch (e) {
+            console.log('Trendyol: JSON-LD parsing failed', e.message);
+        }
 
-        productLinks.forEach((link, index) => {
-            if (products.length >= 25) return;
+        // STRATEGY 0.5: Check for __SEARCH_APP_INITIAL_STATE__ in window
+        try {
+            const scripts = document.querySelectorAll('script');
+            for (const script of scripts) {
+                const text = script.textContent || '';
+                if (text.includes('__SEARCH_APP_INITIAL_STATE__') || text.includes('searchData') || text.includes('"products":')) {
+                    // Try to extract JSON from the script
+                    const jsonMatch = text.match(/(?:__SEARCH_APP_INITIAL_STATE__|window\.__INITIAL_STATE__|searchData)\s*=\s*({[\s\S]*?});?\s*(?:<\/script>|$)/);
+                    if (jsonMatch) {
+                        try {
+                            const data = JSON.parse(jsonMatch[1]);
+                            const productList = data?.searchData?.result?.products || data?.products || data?.result?.products || [];
+                            console.log('Trendyol: Found inline JSON with', productList.length, 'products');
+                            productList.forEach(p => {
+                                if (products.length >= 30) return;
+                                const productId = String(p.id || p.contentId || '');
+                                if (productId && !seenIds.has(productId)) {
+                                    seenIds.add(productId);
+                                    const price = p.price?.sellingPrice || p.price?.discountedPrice || p.price?.originalPrice || 0;
+                                    if (price >= 10 && price <= 500000) {
+                                        products.push({
+                                            name: p.name || p.brand?.name + ' ' + p.name || 'Trendyol Ürünü',
+                                            price,
+                                            originalPrice: p.price?.originalPrice > price ? p.price.originalPrice : null,
+                                            imageUrl: p.images?.[0] || p.image || null,
+                                            productUrl: `https://www.trendyol.com${p.url || ''}`,
+                                            productId: 'ty-' + productId,
+                                            store: 'Trendyol'
+                                        });
+                                    }
+                                }
+                            });
+                        } catch (e) {}
+                    }
+                }
+            }
+            if (products.length > 0) {
+                console.log('Trendyol: Inline JSON extracted', products.length, 'products');
+                return products;
+            }
+        } catch (e) {
+            console.log('Trendyol: Inline JSON parsing failed', e.message);
+        }
+
+        // STRATEGY 1: Direct card-based approach with EXPANDED selectors (2025 Trendyol)
+        const cardSelectors = [
+            // 2025 Trendyol selectors (newer structure)
+            '[data-testid="product-card"]',
+            'div[class*="product-card"]',
+            'div[class*="p-card"]',
+            '.p-card-wrppr',
+            '.p-card-chldrn-cntnr',
+            // Generic product selectors
+            '[data-id]',
+            '.product-card',
+            'div[class*="prdct"]',
+            '[class*="ProductCard"]',
+            '[class*="srchPrdctCrd"]',
+            'article[class*="product"]',
+            'div[class*="search-product"]',
+            '.search-product-card',
+            '[data-testid*="product"]',
+            '[data-product-id]',
+            'li[class*="product"]',
+            // Fallback: Any container with product link
+            'div:has(> a[href*="-p-"])'
+        ];
+
+        let cards = [];
+        for (const selector of cardSelectors) {
+            try {
+                const found = document.querySelectorAll(selector);
+                if (found.length > 2) {
+                    cards = Array.from(found);
+                    console.log(`Trendyol: Found ${cards.length} cards with ${selector}`);
+                    break;
+                }
+            } catch (e) {}
+        }
+
+        // If still no cards, try to find any element with product link inside
+        if (cards.length === 0) {
+            const allLinks = document.querySelectorAll('a[href*="-p-"]');
+            const uniqueParents = new Set();
+            allLinks.forEach(link => {
+                let parent = link.parentElement;
+                for (let i = 0; i < 7 && parent; i++) {
+                    // Look for a container that has both image and price
+                    if (parent.querySelector('img') && parent.textContent?.match(/\d+[.,]\d{2}/)) {
+                        uniqueParents.add(parent);
+                        break;
+                    }
+                    parent = parent.parentElement;
+                }
+            });
+            cards = Array.from(uniqueParents);
+            console.log(`Trendyol: Found ${cards.length} cards via parent traversal`);
+        }
+
+        // Process cards directly
+        cards.forEach((card, index) => {
+            if (products.length >= 30) return;
 
             try {
+                // Find product link
+                const link = card.querySelector('a[href*="-p-"]');
+                if (!link) return;
+
                 const href = link.getAttribute('href') || '';
                 const productIdMatch = href.match(/-p-(\d+)/);
                 if (!productIdMatch) return;
@@ -334,87 +595,120 @@ async function parseTrendyol(page) {
                 if (seenIds.has(productId)) return;
                 seenIds.add(productId);
 
-                // Find the card container (go up the DOM tree)
-                let card = link.closest('[class*="p-card"], [class*="product"], [class*="prdct"]') || link.parentElement?.parentElement;
-                if (!card) card = link;
-
-                // Find price - be specific with Trendyol selectors
+                // Find price - Try EXPANDED selectors (2025 update)
                 let price = 0;
+                const priceSelectors = [
+                    // 2025 Trendyol selectors
+                    '[data-testid="price"]',
+                    '[data-testid="selling-price"]',
+                    'span[class*="prcBox"]',
+                    'div[class*="prcBox"]',
+                    '.prc-box-dscntd',
+                    '.prc-box-sllng',
+                    '.prc-cntnr .prc',
+                    '[class*="price"] span',
+                    '.product-price',
+                    '[data-price]',
+                    '[class*="Price"]',
+                    '[class*="prc"]',
+                    'span[class*="selling"]',
+                    'div[class*="discounted"]',
+                    '[class*="salePrice"]',
+                    '[class*="currentPrice"]',
+                    '.price-box span',
+                    // Generic: any span/div with TL text
+                    'span',
+                    'div'
+                ];
 
-                // Try specific Trendyol price selectors first
-                const discountedPrice = card.querySelector('.prc-box-dscntd');
-                const sellingPrice = card.querySelector('.prc-box-sllng');
-
-                if (discountedPrice) {
-                    price = parseTurkishPrice(discountedPrice.textContent);
-                } else if (sellingPrice) {
-                    price = parseTurkishPrice(sellingPrice.textContent);
-                }
-
-                // Fallback: Look for any price-like element
-                if (!price || price < 100) {
-                    const priceElements = card.querySelectorAll('[class*="prc"], [class*="price"]');
-                    let candidates = [];
-                    for (const el of priceElements) {
-                        const parsed = parseTurkishPrice(el.textContent);
-                        // Collect reasonable prices (100 TL - 500,000 TL for most products)
-                        if (parsed >= 100 && parsed <= 500000) {
-                            candidates.push(parsed);
+                for (const pSel of priceSelectors) {
+                    const priceEl = card.querySelector(pSel);
+                    if (priceEl) {
+                        const parsed = parseTurkishPrice(priceEl.textContent);
+                        if (parsed >= 5 && parsed <= 500000) {
+                            price = parsed;
+                            break;
                         }
                     }
-                    // Take the SMALLEST reasonable price (actual product price, not bundles)
-                    if (candidates.length > 0) {
-                        price = Math.min(...candidates);
-                    }
                 }
 
-                // Final fallback: regex search in card text for price pattern
-                if (!price || price < 100) {
+                // Fallback: Search all text for price pattern
+                if (!price) {
                     const cardText = card.textContent || '';
-                    // Match Turkish price format: 1.234,56 TL or 50.299,00 TL
-                    const priceMatches = cardText.match(/(\d{1,3}(?:\.\d{3})*,\d{2})\s*TL/g);
+                    // Match prices like "3.499,00" or "49.999,99 TL"
+                    const priceMatches = cardText.match(/(\d{1,3}(?:\.\d{3})*,\d{2})(?:\s*TL)?/g);
                     if (priceMatches) {
-                        let candidates = [];
                         for (const match of priceMatches) {
                             const parsed = parseTurkishPrice(match);
-                            if (parsed >= 100 && parsed <= 500000) {
-                                candidates.push(parsed);
+                            if (parsed >= 5 && parsed <= 500000) {
+                                price = parsed;
+                                break;
                             }
-                        }
-                        if (candidates.length > 0) {
-                            price = Math.min(...candidates);
                         }
                     }
                 }
 
-                // Skip products with unreasonable prices
-                if (!price || price < 100 || price > 500000) return;
+                // Skip products without valid price
+                if (!price || price < 5 || price > 500000) return;
 
-                // Find product name
+                // Find product name - EXPANDED strategies
                 let name = '';
                 const nameSelectors = [
-                    '.prdct-desc-cntnr-name', '[class*="product-name"]', '[class*="productName"]',
-                    '.prdct-desc-cntnr span', '[class*="name"]', 'h3', 'h2'
+                    '.prdct-desc-cntnr-name',
+                    '.product-desc-sub-text',
+                    'span[class*="prdct-desc"]',
+                    '[class*="product-name"]',
+                    '[class*="productName"]',
+                    '.prdct-desc-cntnr span:first-child',
+                    'h3',
+                    'h2',
+                    // New 2024/2025 selectors
+                    '[class*="ProductName"]',
+                    '[class*="product-title"]',
+                    '[class*="title"]',
+                    '[data-testid*="name"]',
+                    '[data-testid*="title"]',
+                    'a[title]',
+                    '.product-info span',
+                    '[class*="description"]'
                 ];
+
                 for (const sel of nameSelectors) {
                     const nameEl = card.querySelector(sel);
-                    if (nameEl && nameEl.textContent?.trim()) {
+                    if (nameEl && nameEl.textContent?.trim().length > 3) {
                         name = nameEl.textContent.trim();
                         break;
                     }
                 }
-                if (!name) {
-                    // Use link title or text content
-                    name = link.getAttribute('title') || link.textContent?.trim() || 'Unknown';
+
+                // Fallback: link title or combine available text
+                if (!name || name.length < 5) {
+                    name = link.getAttribute('title') || '';
+                }
+                if (!name || name.length < 5) {
+                    // Get brand + description
+                    const brand = card.querySelector('.prdct-desc-cntnr-ttl, .product-brand')?.textContent?.trim() || '';
+                    const desc = card.querySelector('.prdct-desc-cntnr-name, .product-name')?.textContent?.trim() || '';
+                    name = (brand + ' ' + desc).trim();
+                }
+                if (!name || name.length < 3) {
+                    name = 'Trendyol Ürünü';
                 }
 
                 // Find image
+                let imageUrl = null;
                 const imgEl = card.querySelector('img');
-                let imageUrl = imgEl?.src || imgEl?.getAttribute('data-src') || imgEl?.getAttribute('data-original') || null;
+                if (imgEl) {
+                    imageUrl = imgEl.src || imgEl.getAttribute('data-src') || imgEl.getAttribute('data-original') || null;
+                    // Handle lazy loading placeholder
+                    if (imageUrl && imageUrl.includes('placeholder')) {
+                        imageUrl = imgEl.getAttribute('data-src') || imgEl.getAttribute('data-original') || null;
+                    }
+                }
 
-                // Find original price (use same Turkish price parser)
+                // Find original price
                 let originalPrice = null;
-                const origPriceEl = card.querySelector('.prc-box-orgnl, [class*="originalPrice"], [class*="old-price"]');
+                const origPriceEl = card.querySelector('.prc-box-orgnl, .prc-org, [class*="oldPrice"], [class*="original-price"]');
                 if (origPriceEl) {
                     const parsed = parseTurkishPrice(origPriceEl.textContent);
                     if (parsed > price) originalPrice = parsed;
@@ -429,9 +723,77 @@ async function parseTrendyol(page) {
                     productId: 'ty-' + productId,
                     store: 'Trendyol'
                 });
-            } catch (e) {}
+            } catch (e) {
+                console.log('Trendyol parse error:', e.message);
+            }
         });
 
+        // STRATEGY 2: If no cards found, try link-based approach
+        if (products.length === 0) {
+            console.log('Trendyol: Card strategy failed, trying link-based approach');
+            const productLinks = document.querySelectorAll('a[href*="-p-"]');
+
+            productLinks.forEach((link, index) => {
+                if (products.length >= 30) return;
+
+                try {
+                    const href = link.getAttribute('href') || '';
+                    const productIdMatch = href.match(/-p-(\d+)/);
+                    if (!productIdMatch) return;
+
+                    const productId = productIdMatch[1];
+                    if (seenIds.has(productId)) return;
+                    seenIds.add(productId);
+
+                    // Go up the DOM tree to find card container
+                    let card = link.closest('.p-card-wrppr') ||
+                               link.closest('[class*="p-card"]') ||
+                               link.closest('[class*="product"]') ||
+                               link.parentElement?.parentElement?.parentElement;
+                    if (!card) card = link.parentElement || link;
+
+                    // Find price
+                    let price = 0;
+                    const priceEl = card.querySelector('.prc-box-dscntd, .prc-box-sllng, [class*="prc"]');
+                    if (priceEl) {
+                        price = parseTurkishPrice(priceEl.textContent);
+                    }
+
+                    // Fallback: regex in card text
+                    if (!price) {
+                        const cardText = card.textContent || '';
+                        const priceMatch = cardText.match(/(\d{1,3}(?:\.\d{3})*,\d{2})\s*TL/);
+                        if (priceMatch) {
+                            price = parseTurkishPrice(priceMatch[0]);
+                        }
+                    }
+
+                    if (!price || price < 5 || price > 500000) return;
+
+                    // Get name
+                    let name = link.getAttribute('title') ||
+                               card.querySelector('.prdct-desc-cntnr-name')?.textContent?.trim() ||
+                               card.querySelector('[class*="product-name"]')?.textContent?.trim() ||
+                               'Trendyol Ürünü';
+
+                    // Get image
+                    const imgEl = card.querySelector('img');
+                    let imageUrl = imgEl?.src || imgEl?.getAttribute('data-src') || null;
+
+                    products.push({
+                        name: name.substring(0, 200),
+                        price,
+                        originalPrice: null,
+                        imageUrl,
+                        productUrl: href.startsWith('http') ? href : 'https://www.trendyol.com' + href,
+                        productId: 'ty-' + productId,
+                        store: 'Trendyol'
+                    });
+                } catch (e) {}
+            });
+        }
+
+        console.log(`Trendyol: Total ${products.length} products found`);
         return products;
     });
 }
@@ -441,13 +803,56 @@ async function parseHepsiburada(page) {
         const products = [];
         const seenIds = new Set();
 
-        // Strategy: Find all product links first
-        const productLinks = document.querySelectorAll('a[href*="-p-"], a[href*="/p-"]');
+        // Helper: Parse Turkish price format
+        function parseTurkishPrice(text) {
+            if (!text) return 0;
+            const match = text.match(/(\d{1,3}(?:\.\d{3})*),(\d{2})/);
+            if (match) {
+                const price = parseFloat(match[1].replace(/\./g, '') + '.' + match[2]);
+                return (price >= 10 && price <= 500000) ? price : 0;
+            }
+            const simple = text.match(/(\d+),(\d{2})/);
+            if (simple) {
+                const price = parseFloat(simple[1] + '.' + simple[2]);
+                return (price >= 10 && price <= 500000) ? price : 0;
+            }
+            return 0;
+        }
 
-        productLinks.forEach((link) => {
+        // STRATEGY 1: Modern Hepsiburada card selectors (2024/2025)
+        const cardSelectors = [
+            '[data-test-id="product-card-item"]',
+            'li[class*="productListContent"]',
+            'div[class*="moria-ProductCard"]',
+            '[class*="product-card"]',
+            '[class*="ProductCard"]',
+            'article[class*="product"]',
+            '.search-item',
+            '[data-productid]',
+            'li[class*="search"]'
+        ];
+
+        let cards = [];
+        for (const selector of cardSelectors) {
+            try {
+                const found = document.querySelectorAll(selector);
+                if (found.length > 2) {
+                    cards = Array.from(found);
+                    console.log(`Hepsiburada: Found ${cards.length} cards with ${selector}`);
+                    break;
+                }
+            } catch (e) {}
+        }
+
+        // Process cards
+        cards.forEach((card) => {
             if (products.length >= 25) return;
 
             try {
+                // Find product link
+                const link = card.querySelector('a[href*="-p-"], a[href*="/p-"]') || card.querySelector('a');
+                if (!link) return;
+
                 const href = link.getAttribute('href') || '';
                 const productIdMatch = href.match(/-p-([A-Z0-9]+)/i) || href.match(/\/p-([A-Z0-9]+)/i);
                 if (!productIdMatch) return;
@@ -456,22 +861,24 @@ async function parseHepsiburada(page) {
                 if (seenIds.has(productId)) return;
                 seenIds.add(productId);
 
-                // Find the card container
-                let card = link.closest('[data-test-id="product-card-item"], [class*="product"], [class*="Product"]') || link.parentElement?.parentElement;
-                if (!card) card = link;
-
-                // Find price
+                // Find price - expanded selectors
                 let price = 0;
                 const priceSelectors = [
-                    '[data-test-id="price-current-price"]', '[class*="currentPrice"]',
-                    '[class*="price"]', '[class*="Price"]', '.price'
+                    '[data-test-id="price-current-price"]',
+                    '[class*="price-value"]',
+                    '[class*="currentPrice"]',
+                    '[class*="sale-price"]',
+                    '[class*="ProductCard"] [class*="price"]',
+                    '.price-new',
+                    '.product-price',
+                    '[class*="Price"]',
+                    'span[class*="price"]'
                 ];
 
                 for (const sel of priceSelectors) {
                     const priceEl = card.querySelector(sel);
                     if (priceEl) {
-                        const priceText = priceEl.textContent || '';
-                        const parsed = parseFloat(priceText.replace(/[^\d,]/g, '').replace(',', '.'));
+                        const parsed = parseTurkishPrice(priceEl.textContent);
                         if (parsed > 0) {
                             price = parsed;
                             break;
@@ -479,41 +886,59 @@ async function parseHepsiburada(page) {
                     }
                 }
 
-                // Fallback: regex
+                // Fallback: regex in card text
                 if (!price) {
                     const cardText = card.textContent || '';
-                    const priceMatch = cardText.match(/(\d{1,3}(?:\.\d{3})*,\d{2})\s*TL/);
-                    if (priceMatch) {
-                        price = parseFloat(priceMatch[1].replace(/\./g, '').replace(',', '.'));
+                    const priceMatches = cardText.match(/(\d{1,3}(?:\.\d{3})*,\d{2})\s*TL/g);
+                    if (priceMatches) {
+                        for (const match of priceMatches) {
+                            const parsed = parseTurkishPrice(match);
+                            if (parsed > 0) {
+                                price = parsed;
+                                break;
+                            }
+                        }
                     }
                 }
 
                 if (!price || price <= 0) return;
 
-                // Find name
+                // Find name - expanded selectors
                 let name = '';
                 const nameSelectors = [
-                    '[data-test-id="product-card-name"]', '[class*="productName"]',
-                    '[class*="product-title"]', '[class*="name"]', 'h3', 'h2'
+                    '[data-test-id="product-card-name"]',
+                    '[class*="product-title"]',
+                    '[class*="productName"]',
+                    '[class*="ProductCard"] h3',
+                    '[class*="title"]',
+                    '.product-name',
+                    'h3',
+                    'h2',
+                    'a[title]'
                 ];
+
                 for (const sel of nameSelectors) {
                     const nameEl = card.querySelector(sel);
-                    if (nameEl && nameEl.textContent?.trim()) {
-                        name = nameEl.textContent.trim();
-                        break;
+                    if (nameEl) {
+                        const text = nameEl.textContent?.trim() || nameEl.getAttribute('title') || '';
+                        if (text.length > 5) {
+                            name = text;
+                            break;
+                        }
                     }
                 }
-                if (!name) name = link.getAttribute('title') || link.textContent?.trim() || 'Unknown';
+
+                if (!name) name = link.getAttribute('title') || link.textContent?.trim() || 'Hepsiburada Ürünü';
 
                 // Find image
                 const imgEl = card.querySelector('img');
-                let imageUrl = imgEl?.src || imgEl?.getAttribute('data-src') || null;
+                let imageUrl = imgEl?.src || imgEl?.getAttribute('data-src') || imgEl?.getAttribute('data-original') || null;
 
                 // Original price
                 let originalPrice = null;
-                const origPriceEl = card.querySelector('[data-test-id="price-old-price"], [class*="oldPrice"], [class*="old-price"]');
+                const origPriceEl = card.querySelector('[data-test-id="price-old-price"], [class*="oldPrice"], [class*="old-price"], del');
                 if (origPriceEl) {
-                    const parsed = parseFloat(origPriceEl.textContent?.replace(/[^\d,]/g, '').replace(',', '.') || '0');
+                    const parsed = parseTurkishPrice(origPriceEl.textContent);
                     if (parsed > price) originalPrice = parsed;
                 }
 
@@ -528,6 +953,71 @@ async function parseHepsiburada(page) {
                 });
             } catch (e) {}
         });
+
+        // STRATEGY 2: Fallback - link-based approach
+        if (products.length === 0) {
+            console.log('Hepsiburada: Card strategy failed, trying link-based approach');
+            const productLinks = document.querySelectorAll('a[href*="-p-"]');
+
+            productLinks.forEach((link) => {
+                if (products.length >= 25) return;
+
+                try {
+                    const href = link.getAttribute('href') || '';
+                    const productIdMatch = href.match(/-p-([A-Z0-9]+)/i);
+                    if (!productIdMatch) return;
+
+                    const productId = productIdMatch[1];
+                    if (seenIds.has(productId)) return;
+                    seenIds.add(productId);
+
+                    // Go up to find card container
+                    let card = link;
+                    for (let i = 0; i < 6 && card.parentElement; i++) {
+                        card = card.parentElement;
+                        if (card.querySelector('[class*="price"]') && card.querySelector('img')) break;
+                    }
+
+                    // Find price
+                    let price = 0;
+                    const priceEl = card.querySelector('[class*="price"], [class*="Price"]');
+                    if (priceEl) {
+                        price = parseTurkishPrice(priceEl.textContent);
+                    }
+
+                    if (!price) {
+                        const cardText = card.textContent || '';
+                        const priceMatch = cardText.match(/(\d{1,3}(?:\.\d{3})*,\d{2})/);
+                        if (priceMatch) {
+                            price = parseTurkishPrice(priceMatch[0]);
+                        }
+                    }
+
+                    if (!price || price <= 0) return;
+
+                    // Find name
+                    const name = link.getAttribute('title') ||
+                                 card.querySelector('h3, h2, [class*="title"]')?.textContent?.trim() ||
+                                 'Hepsiburada Ürünü';
+
+                    // Find image
+                    const imgEl = card.querySelector('img');
+                    const imageUrl = imgEl?.src || imgEl?.getAttribute('data-src') || null;
+
+                    products.push({
+                        name: name.substring(0, 200),
+                        price,
+                        originalPrice: null,
+                        imageUrl,
+                        productUrl: href.startsWith('http') ? href : 'https://www.hepsiburada.com' + href,
+                        productId: 'hb-' + productId,
+                        store: 'Hepsiburada'
+                    });
+                } catch (e) {}
+            });
+        }
+
+        console.log(`Hepsiburada: Total ${products.length} products found`);
         return products;
     });
 }
@@ -632,45 +1122,223 @@ async function parseAmazon(page) {
 async function parseN11(page) {
     return await page.evaluate(() => {
         const products = [];
-        document.querySelectorAll('.columnContent .card-link, .listView .plink').forEach((link, index) => {
-            if (index >= 25) return;
+        const seenIds = new Set();
+
+        // Helper: Parse Turkish price format
+        function parseTurkishPrice(text) {
+            if (!text) return 0;
+            const match = text.match(/(\d{1,3}(?:\.\d{3})*),(\d{2})/);
+            if (match) {
+                const price = parseFloat(match[1].replace(/\./g, '') + '.' + match[2]);
+                return (price >= 10 && price <= 500000) ? price : 0;
+            }
+            const simple = text.match(/(\d+),(\d{2})/);
+            if (simple) {
+                const price = parseFloat(simple[1] + '.' + simple[2]);
+                return (price >= 10 && price <= 500000) ? price : 0;
+            }
+            return 0;
+        }
+
+        // STRATEGY 1: Modern N11 card selectors (2024/2025)
+        const cardSelectors = [
+            '.columnContent',
+            '.listView',
+            '[class*="productItem"]',
+            '[class*="product-card"]',
+            '.product-card',
+            'li[class*="column"]',
+            '[data-product-id]',
+            'article[class*="product"]',
+            '.search-result-item'
+        ];
+
+        let cards = [];
+        for (const selector of cardSelectors) {
             try {
-                const card = link.closest('.columnContent') || link.closest('.listView');
-                if (!card) return;
+                const found = document.querySelectorAll(selector);
+                if (found.length > 2) {
+                    cards = Array.from(found);
+                    console.log(`N11: Found ${cards.length} cards with ${selector}`);
+                    break;
+                }
+            } catch (e) {}
+        }
 
-                const nameEl = card.querySelector('.productName, .pro-name');
-                const priceEl = card.querySelector('.newPrice ins, .price ins, .price-new');
-                const originalPriceEl = card.querySelector('.oldPrice, .price del, .price-old');
-                const imgEl = card.querySelector('img');
+        // Process cards
+        cards.forEach((card) => {
+            if (products.length >= 25) return;
 
-                if (!priceEl) return;
+            try {
+                // Find product link
+                const link = card.querySelector('a.card-link, a.plink, a[href*="/urun/"]') || card.querySelector('a');
+                if (!link) return;
 
                 const href = link.getAttribute('href') || '';
-                const priceText = priceEl.textContent || '';
-                const price = parseFloat(priceText.replace(/[^\d,]/g, '').replace(',', '.'));
+                // N11 URL pattern: /urun/urun-adi-123456
+                const productIdMatch = href.match(/\/urun\/[^\/]+-(\d+)/) || href.match(/\/(\d+)(?:\?|$)/);
+                if (!productIdMatch) return;
 
-                let originalPrice = null;
-                if (originalPriceEl) {
-                    const origText = originalPriceEl.textContent || '';
-                    originalPrice = parseFloat(origText.replace(/[^\d,]/g, '').replace(',', '.'));
+                const productId = productIdMatch[1];
+                if (seenIds.has(productId)) return;
+                seenIds.add(productId);
+
+                // Find price - expanded selectors
+                let price = 0;
+                const priceSelectors = [
+                    '.newPrice ins',
+                    '.price ins',
+                    '.price-new',
+                    '.newPrice',
+                    '[class*="currentPrice"]',
+                    '[class*="sale-price"]',
+                    '.product-price',
+                    '[class*="Price"] ins',
+                    'ins[class*="price"]'
+                ];
+
+                for (const sel of priceSelectors) {
+                    const priceEl = card.querySelector(sel);
+                    if (priceEl) {
+                        const parsed = parseTurkishPrice(priceEl.textContent);
+                        if (parsed > 0) {
+                            price = parsed;
+                            break;
+                        }
+                    }
                 }
 
-                const productIdMatch = href.match(/\/(\d+)(?:\?|$)/);
-                const productId = productIdMatch ? productIdMatch[1] : Math.random().toString(36).slice(2);
+                // Fallback: regex in card text
+                if (!price) {
+                    const cardText = card.textContent || '';
+                    const priceMatches = cardText.match(/(\d{1,3}(?:\.\d{3})*,\d{2})\s*TL/g);
+                    if (priceMatches) {
+                        for (const match of priceMatches) {
+                            const parsed = parseTurkishPrice(match);
+                            if (parsed > 0) {
+                                price = parsed;
+                                break;
+                            }
+                        }
+                    }
+                }
 
-                if (price && price > 0) {
+                if (!price || price <= 0) return;
+
+                // Find name - expanded selectors
+                let name = '';
+                const nameSelectors = [
+                    '.productName',
+                    '.pro-name',
+                    '[class*="product-title"]',
+                    '[class*="productTitle"]',
+                    '.product-name',
+                    'h3',
+                    'h2',
+                    'a[title]'
+                ];
+
+                for (const sel of nameSelectors) {
+                    const nameEl = card.querySelector(sel);
+                    if (nameEl) {
+                        const text = nameEl.textContent?.trim() || nameEl.getAttribute('title') || '';
+                        if (text.length > 5) {
+                            name = text;
+                            break;
+                        }
+                    }
+                }
+
+                if (!name) name = link.getAttribute('title') || link.textContent?.trim() || 'N11 Ürünü';
+
+                // Find image
+                const imgEl = card.querySelector('img');
+                let imageUrl = imgEl?.src || imgEl?.getAttribute('data-src') || imgEl?.getAttribute('data-original') || imgEl?.getAttribute('data-lazy') || null;
+
+                // Original price
+                let originalPrice = null;
+                const origPriceEl = card.querySelector('.oldPrice, .price del, .price-old, [class*="oldPrice"]');
+                if (origPriceEl) {
+                    const parsed = parseTurkishPrice(origPriceEl.textContent);
+                    if (parsed > price) originalPrice = parsed;
+                }
+
+                products.push({
+                    name: name.substring(0, 200),
+                    price,
+                    originalPrice,
+                    imageUrl,
+                    productUrl: href.startsWith('http') ? href : 'https://www.n11.com' + href,
+                    productId: 'n11-' + productId,
+                    store: 'N11'
+                });
+            } catch (e) {}
+        });
+
+        // STRATEGY 2: Link-based fallback
+        if (products.length === 0) {
+            console.log('N11: Card strategy failed, trying link-based approach');
+            const productLinks = document.querySelectorAll('a[href*="/urun/"]');
+
+            productLinks.forEach((link) => {
+                if (products.length >= 25) return;
+
+                try {
+                    const href = link.getAttribute('href') || '';
+                    const productIdMatch = href.match(/\/urun\/[^\/]+-(\d+)/);
+                    if (!productIdMatch) return;
+
+                    const productId = productIdMatch[1];
+                    if (seenIds.has(productId)) return;
+                    seenIds.add(productId);
+
+                    // Go up to find card container
+                    let card = link;
+                    for (let i = 0; i < 6 && card.parentElement; i++) {
+                        card = card.parentElement;
+                        if (card.querySelector('[class*="price"]') && card.querySelector('img')) break;
+                    }
+
+                    // Find price
+                    let price = 0;
+                    const priceEl = card.querySelector('[class*="price"], [class*="Price"], ins');
+                    if (priceEl) {
+                        price = parseTurkishPrice(priceEl.textContent);
+                    }
+
+                    if (!price) {
+                        const cardText = card.textContent || '';
+                        const priceMatch = cardText.match(/(\d{1,3}(?:\.\d{3})*,\d{2})/);
+                        if (priceMatch) {
+                            price = parseTurkishPrice(priceMatch[0]);
+                        }
+                    }
+
+                    if (!price || price <= 0) return;
+
+                    // Find name
+                    const name = link.getAttribute('title') ||
+                                 card.querySelector('h3, h2, [class*="name"]')?.textContent?.trim() ||
+                                 'N11 Ürünü';
+
+                    // Find image
+                    const imgEl = card.querySelector('img');
+                    const imageUrl = imgEl?.src || imgEl?.getAttribute('data-src') || null;
+
                     products.push({
-                        name: nameEl?.textContent?.trim() || 'Unknown',
+                        name: name.substring(0, 200),
                         price,
-                        originalPrice: originalPrice > price ? originalPrice : null,
-                        imageUrl: imgEl?.src || imgEl?.getAttribute('data-src') || imgEl?.getAttribute('data-original') || null,
+                        originalPrice: null,
+                        imageUrl,
                         productUrl: href.startsWith('http') ? href : 'https://www.n11.com' + href,
                         productId: 'n11-' + productId,
                         store: 'N11'
                     });
-                }
-            } catch (e) {}
-        });
+                } catch (e) {}
+            });
+        }
+
+        console.log(`N11: Total ${products.length} products found`);
         return products;
     });
 }
@@ -982,15 +1650,22 @@ async function scrapeStore(store, query) {
     const products = [];
     const userAgent = getRandomUserAgent();
     const screen = getRandomScreen();
+    const isHighProtection = HIGH_PROTECTION_SITES.includes(store);
 
     // Extract Chrome version from user agent for headers
     const chromeVersion = userAgent.match(/Chrome\/(\d+)/)?.[1] || '125';
 
+    console.log(`${store}: Starting scrape (high protection: ${isHighProtection})`);
+
+    // High protection sites need longer timeouts
+    const timeoutSecs = isHighProtection ? 60 : 40;
+    const navTimeoutSecs = isHighProtection ? 35 : 25;
+
     const crawler = new PlaywrightCrawler({
         maxConcurrency: 1,
         maxRequestRetries: 2,
-        requestHandlerTimeoutSecs: 40,
-        navigationTimeoutSecs: 25,
+        requestHandlerTimeoutSecs: timeoutSecs,
+        navigationTimeoutSecs: navTimeoutSecs,
         launchContext: {
             launchOptions: {
                 headless: true,
@@ -1032,6 +1707,81 @@ async function scrapeStore(store, query) {
         },
         preNavigationHooks: [
             async ({ page }) => {
+                // NOTE: Script blocking disabled as it can break page rendering
+                // The stealth script should be enough to bypass fingerprinting
+                // Block only analytics/tracking, not security scripts
+                if (isHighProtection) {
+                    await page.route('**/*', async (route) => {
+                        const url = route.request().url().toLowerCase();
+                        // Only block obvious analytics, not security scripts
+                        const blockedPatterns = [
+                            'google-analytics',
+                            'googletagmanager',
+                            'facebook.com/tr',
+                            'doubleclick.net',
+                            'go-mpulse.net'
+                        ];
+
+                        const shouldBlock = blockedPatterns.some(pattern => url.includes(pattern));
+
+                        if (shouldBlock) {
+                            await route.abort();
+                        } else {
+                            await route.continue();
+                        }
+                    });
+                }
+
+                // === CDP MODE ENHANCEMENTS ===
+                try {
+                    // Get CDP session for deeper control
+                    const client = await page.context().newCDPSession(page);
+
+                    // Enable CDP domains
+                    await client.send('Runtime.enable');
+                    await client.send('Network.enable');
+
+                    // Hide webdriver at CDP level
+                    await client.send('Page.addScriptToEvaluateOnNewDocument', {
+                        source: `
+                            // CDP-level stealth
+                            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+                            // Override permissions query
+                            const originalQuery = window.navigator.permissions.query;
+                            window.navigator.permissions.query = (parameters) => (
+                                parameters.name === 'notifications' ?
+                                    Promise.resolve({ state: Notification.permission }) :
+                                    originalQuery(parameters)
+                            );
+
+                            // Mask automation
+                            window.navigator.permissions.query = async (params) => {
+                                if (params.name === 'notifications') {
+                                    return { state: 'prompt', onchange: null };
+                                }
+                                return { state: 'granted', onchange: null };
+                            };
+                        `
+                    });
+
+                    // Emulate realistic timezone
+                    await client.send('Emulation.setTimezoneOverride', {
+                        timezoneId: 'Europe/Istanbul'
+                    });
+
+                    // Set realistic geolocation (Istanbul)
+                    await client.send('Emulation.setGeolocationOverride', {
+                        latitude: 41.0082,
+                        longitude: 28.9784,
+                        accuracy: 100
+                    });
+
+                } catch (cdpError) {
+                    console.log('CDP setup warning:', cdpError.message);
+                }
+                // === END CDP ENHANCEMENTS ===
+
                 // Set realistic viewport with device scale factor
                 await page.setViewportSize({
                     width: screen.width,
@@ -1070,13 +1820,49 @@ async function scrapeStore(store, query) {
         async requestHandler({ page, request }) {
             console.log(`Scraping ${store}: ${request.url}`);
 
+            // For high protection sites, add extra delay and behaviors
+            if (isHighProtection) {
+                console.log(`${store}: High protection mode - adding human simulation`);
+
+                // Initial wait - let page fully load
+                await page.waitForTimeout(randomDelay(2000, 3000));
+
+                // Handle cookie consent first
+                await handleCookieConsent(page);
+
+                // Quick mouse movements to appear human (faster)
+                for (let i = 0; i < 3; i++) {
+                    await page.mouse.move(
+                        Math.random() * screen.width * 0.8 + 50,
+                        Math.random() * screen.height * 0.6 + 50,
+                        { steps: 5 }
+                    );
+                    await page.waitForTimeout(randomDelay(150, 300));
+                }
+
+                // Faster scroll pattern
+                const scrollSteps = [0.2, 0.4, 0.6, 0.8, 0.5];
+                for (const step of scrollSteps) {
+                    await page.evaluate((s) => {
+                        window.scrollTo({
+                            top: document.body.scrollHeight * s,
+                            behavior: 'smooth'
+                        });
+                    }, step);
+                    await page.waitForTimeout(randomDelay(400, 700));
+                }
+
+                // Brief wait for dynamic content
+                await page.waitForTimeout(randomDelay(1000, 1500));
+            }
+
             // Initial delay - human-like page load observation
-            await page.waitForTimeout(randomDelay(800, 1500));
+            await page.waitForTimeout(randomDelay(1000, 2000));
 
             // Wait for products to load
             let selectorFound = false;
             try {
-                await page.waitForSelector(config.waitSelector, { timeout: 15000 });
+                await page.waitForSelector(config.waitSelector, { timeout: 20000 });
                 selectorFound = true;
             } catch (e) {
                 console.log(`${store}: Primary selector timeout, trying fallback...`);
@@ -1087,10 +1873,63 @@ async function scrapeStore(store, query) {
             }
 
             // Wait for JS rendering and dynamic content
-            await page.waitForTimeout(randomDelay(1500, 2500));
+            await page.waitForTimeout(randomDelay(2000, 3000));
+
+            // TRENDYOL SPECIFIC: ULTRA AGGRESSIVE scrolling to trigger lazy loading
+            if (store === 'trendyol') {
+                console.log('Trendyol: Performing ULTRA aggressive scroll for lazy-loaded products...');
+
+                // Wait for initial page load
+                await page.waitForTimeout(2000);
+
+                // Method 1: Scroll down in 10 steps (doubled from 5)
+                for (let i = 1; i <= 10; i++) {
+                    await page.evaluate((step) => {
+                        window.scrollTo({
+                            top: document.body.scrollHeight * (step / 10),
+                            behavior: 'smooth'
+                        });
+                    }, i);
+                    await page.waitForTimeout(randomDelay(600, 1000));
+                }
+
+                // Method 2: Scroll to absolute bottom
+                await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
+                await page.waitForTimeout(1500);
+
+                // Method 3: Scroll back to top slowly
+                await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
+                await page.waitForTimeout(1000);
+
+                // Method 4: Scroll to middle and wait for lazy load
+                await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight * 0.3, behavior: 'smooth' }));
+                await page.waitForTimeout(1500);
+                await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight * 0.6, behavior: 'smooth' }));
+                await page.waitForTimeout(1500);
+                await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight * 0.9, behavior: 'smooth' }));
+                await page.waitForTimeout(1500);
+
+                // Method 5: Trigger intersection observer by scrolling element by element
+                await page.evaluate(() => {
+                    const cards = document.querySelectorAll('.p-card-wrppr, [class*="product"], [data-id]');
+                    cards.forEach((card, i) => {
+                        if (i < 30) {
+                            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        }
+                    });
+                });
+                await page.waitForTimeout(2000);
+
+                // Final scroll to top to see all products
+                await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
+                await page.waitForTimeout(1000);
+
+                console.log('Trendyol: Scroll complete, waiting for content...');
+                await page.waitForTimeout(randomDelay(2000, 3000));
+            }
 
             // Human-like scrolling behavior - gradual scroll with pauses
-            const scrollSteps = [0.2, 0.4, 0.6, 0.5, 0.3]; // Scroll pattern
+            const scrollSteps = [0.2, 0.4, 0.6, 0.8, 0.5, 0.3]; // Scroll pattern
             for (const step of scrollSteps) {
                 await page.evaluate((s) => {
                     window.scrollTo({
@@ -1116,6 +1955,21 @@ async function scrapeStore(store, query) {
 
             // Wait a bit more for lazy-loaded images
             await page.waitForTimeout(randomDelay(500, 1000));
+
+            // Check for bot block before parsing
+            if (isHighProtection) {
+                const blockStatus = await detectBotBlock(page);
+                if (blockStatus.blocked) {
+                    console.log(`${store}: BOT BLOCKED - Reason: ${blockStatus.reason}`);
+                    // Try to screenshot for debugging
+                    try {
+                        const screenshotPath = `/tmp/${store}-blocked-${Date.now()}.png`;
+                        await page.screenshot({ path: screenshotPath });
+                        console.log(`${store}: Screenshot saved to ${screenshotPath}`);
+                    } catch (e) {}
+                    return;
+                }
+            }
 
             // Parse products
             const parsed = await config.parser(page);

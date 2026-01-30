@@ -3,6 +3,12 @@ const cors = require('cors');
 const db = require('./database');
 const { execSync, spawn } = require('child_process');
 const path = require('path');
+const Anthropic = require('@anthropic-ai/sdk');
+
+// Initialize Anthropic client for AI filtering
+const anthropic = new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY || ''
+});
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -216,32 +222,34 @@ function buildStoreSummary(storeResult) {
 }
 
 async function fetchAndCacheSearch(query) {
-    // FAST MODE: Only proven stores (trendyol, amazon, teknosa) - all parallel
+    // FAST MODE: Main stores - all parallel
     console.log(`Starting Crawlee scrape for: "${query}"`);
     const startTime = Date.now();
 
     // Track all store results with status
     const storeResults = {};
 
-    // PROVEN STORES - all parallel for speed (~30s total)
-    console.log('Scraping: trendyol, amazon, teknosa (parallel)');
+    // MAIN STORES - all parallel for speed (~30-40s total)
+    console.log('Scraping: trendyol, amazon, hepsiburada, teknosa (parallel)');
     const results = await Promise.all([
         scrapeStoreWithStatus(query, 'trendyol'),
         scrapeStoreWithStatus(query, 'amazon'),
+        scrapeStoreWithStatus(query, 'hepsiburada'),
         scrapeStoreWithStatus(query, 'teknosa')
     ]);
     storeResults.trendyol = results[0];
     storeResults.amazon = results[1];
-    storeResults.teknosa = results[2];
+    storeResults.hepsiburada = results[2];
+    storeResults.teknosa = results[3];
 
     // Collect all products
     const allProducts = Object.values(storeResults).flatMap(r => r.products);
 
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`Total scraped: ${allProducts.length} in ${duration}s (T:${storeResults.trendyol.products.length} A:${storeResults.amazon.products.length} TK:${storeResults.teknosa.products.length})`);
+    console.log(`Total scraped: ${allProducts.length} in ${duration}s (T:${storeResults.trendyol.products.length} A:${storeResults.amazon.products.length} HB:${storeResults.hepsiburada.products.length} TK:${storeResults.teknosa.products.length})`);
 
-    // Apply smart filtering
-    const filtered = smartFilterProducts(query, allProducts);
+    // Apply smart filtering (AI-powered when API key available)
+    const filtered = await smartFilterProducts(query, allProducts);
 
     // Record prices to database (async, don't wait)
     db.recordPricesBatch(filtered.products).catch(e => {
@@ -669,9 +677,19 @@ const PRODUCT_CATEGORIES = {
     },
     laptop: {
         keywords: ['laptop', 'notebook', 'bilgisayar', 'macbook', 'thinkpad', 'ideapad', 'vivobook', 'zenbook', 'gaming laptop'],
-        excludeKeywords: ['çanta', 'canta', 'kılıf', 'kilif', 'stand', 'soğutucu', 'sogutcu', 'mouse pad', 'mousepad', 'sticker', 'webcam', 'tutucu', 'koruyucu', 'temizleyici'],
+        excludeKeywords: [
+            // Accessories
+            'çanta', 'canta', 'kılıf', 'kilif', 'stand', 'soğutucu', 'sogutcu', 'mouse pad', 'mousepad',
+            'sticker', 'webcam', 'tutucu', 'koruyucu', 'temizleyici', 'çıkartma', 'cikartma',
+            // Books (in multiple languages)
+            'kitap', 'book', 'dummies', 'nuls', 'pour les', 'for dummies', 'guide', 'manuel', 'manual',
+            'rehber', 'öğren', 'ogren', 'eğitim', 'egitim', 'kurs', 'edition', 'basım', 'basim',
+            // Peripherals (not the laptop itself)
+            'mouse', 'fare', 'klavye', 'keyboard', 'monitör', 'monitor',
+            'harici', 'external', 'hub', 'dongle', 'adaptör', 'adaptor'
+        ],
         intentLabel: 'Laptop',
-        mainProductIndicators: ['i5', 'i7', 'i9', 'ryzen', 'ram', 'ssd', 'intel', 'amd', 'ekran', 'ghz', 'core']
+        mainProductIndicators: ['i5', 'i7', 'i9', 'ryzen', 'ram', 'ssd', 'intel', 'amd', 'ghz', 'core', 'm1', 'm2', 'm3', 'm4', 'apple']
     },
     headphones: {
         keywords: ['kulaklık', 'kulaklik', 'airpods', 'earbuds', 'headphone', 'earphone', 'bluetooth kulaklık'],
@@ -725,6 +743,21 @@ const ACCESSORY_PATTERNS = [
     'epoksi', 'epoksili', 'magsafe', 'wireless charger', 'kablosuz şarj',
     'köşe koruma', 'kose koruma', 'darbe', 'zırh', 'zirh', 'armor',
     'şeffaf', 'seffaf', 'transparent', 'clear', 'mat', 'parlak', 'glitter'
+];
+
+// NON-PRODUCT patterns - these indicate the item is NOT the main product (books, accessories for OTHER devices, etc)
+const NON_PRODUCT_PATTERNS = [
+    // Books and learning materials
+    'kitap', 'book', 'kitabı', 'kitabi', 'dummies', 'nuls', 'pour les', 'for dummies',
+    'öğren', 'ogren', 'rehber', 'guide', 'manual', 'kılavuz', 'kilavuz', 'edition',
+    'basım', 'basim', 'baskı', 'baski', 'taş basım', 'tas basim', 'karton kapak',
+    'ciltli', 'paperback', 'hardcover', 'isbn', 'yayınevi', 'yayinevi', 'yayınları', 'yayinlari',
+    // Decorative items
+    'poster', 'tablo', 'resim', 'duvar', 'dekor', 'sanatçı', 'sanatci', 'artist',
+    // Replacement parts (not the actual device)
+    'yedek parça', 'yedek parca', 'tamir', 'onarım', 'onarim',
+    // Toys and models
+    'oyuncak', 'maket', 'minyatür', 'minyatur', 'replika'
 ];
 
 // Turkish character normalization for matching
@@ -953,6 +986,31 @@ function classifyProduct(product, intent) {
         return { type: 'Alakasız', confidence: 0.8, isRelevant: false };
     }
 
+    // FIRST: Check if product is a NON-PRODUCT (books, toys, etc.) - these are ALWAYS excluded
+    const matchedNonProduct = NON_PRODUCT_PATTERNS.find(pattern => nameLower.includes(pattern));
+    if (matchedNonProduct) {
+        return { type: 'Kitap/Aksesuar', confidence: 0.95, isRelevant: false };
+    }
+
+    // PRICE SANITY CHECK: Filter products with unrealistic prices for the category
+    // A real MacBook/laptop won't cost less than 5000 TL, a real iPhone won't cost less than 3000 TL
+    const minPriceThresholds = {
+        laptop: 5000,
+        phone: 3000,
+        tablet: 2000,
+        tv: 2000,
+        gaming: 3000,
+        watch: 500
+    };
+
+    if (intent.category && minPriceThresholds[intent.category]) {
+        const minPrice = minPriceThresholds[intent.category];
+        if (product.price && product.price < minPrice) {
+            // Price too low - likely an accessory, book, or case
+            return { type: 'Şüpheli Fiyat', confidence: 0.9, isRelevant: false };
+        }
+    }
+
     // Check if product name contains accessory patterns
     const matchedAccessoryPattern = ACCESSORY_PATTERNS.find(pattern => nameLower.includes(pattern));
 
@@ -1040,7 +1098,70 @@ function analyzeDiscount(product) {
     };
 }
 
-function smartFilterProducts(query, products) {
+// AI-based product filtering using Claude
+async function aiFilterProducts(query, products) {
+    if (!process.env.ANTHROPIC_API_KEY || products.length === 0) {
+        console.log('AI filter skipped: No API key or empty products');
+        return null; // Fall back to rule-based filtering
+    }
+
+    try {
+        console.log(`AI filtering ${products.length} products for query: "${query}"`);
+
+        // Create a summary of products for AI (limit to first 50 to save tokens)
+        const productSummaries = products.slice(0, 50).map((p, i) =>
+            `${i + 1}. "${p.name}" - ${p.price} TL`
+        ).join('\n');
+
+        const response = await anthropic.messages.create({
+            model: 'claude-3-5-haiku-20241022',
+            max_tokens: 1024,
+            messages: [{
+                role: 'user',
+                content: `Kullanıcı "${query}" arıyor. Aşağıdaki ürün listesinden SADECE gerçek "${query}" ürünlerinin numaralarını döndür.
+
+HARIÇ TUT:
+- Kitaplar, rehberler, kılavuzlar (örn: "MacBook For Dummies", "User Guide")
+- Kılıflar, kapaklar, koruyucular
+- Şarj cihazları, adaptörler, kablolar
+- Hub, dock, stand gibi aksesuarlar
+- Sticker, çıkartma, poster
+- Mouse, klavye, monitör (ana ürün bunlar değilse)
+- Yedek parçalar, tamir kitleri
+
+SADECE dahil et:
+- Gerçek ${query} cihazının kendisi (örn: MacBook Air M4, MacBook Pro 16")
+
+Ürünler:
+${productSummaries}
+
+SADECE dahil edilecek ürün numaralarını JSON array olarak döndür, başka bir şey yazma.
+Örnek: [1, 5, 12, 23]
+Eğer hiçbiri uygun değilse: []`
+            }]
+        });
+
+        const responseText = response.content[0].text.trim();
+        console.log('AI response:', responseText);
+
+        // Parse the JSON array
+        const match = responseText.match(/\[[\d,\s]*\]/);
+        if (match) {
+            const validIndices = JSON.parse(match[0]);
+            console.log(`AI selected ${validIndices.length} products out of ${Math.min(products.length, 50)}`);
+
+            // Return indices (1-based from AI, convert to 0-based)
+            return validIndices.map(i => i - 1).filter(i => i >= 0 && i < products.length);
+        }
+
+        return null;
+    } catch (error) {
+        console.error('AI filter error:', error.message);
+        return null; // Fall back to rule-based filtering
+    }
+}
+
+async function smartFilterProducts(query, products) {
     const intent = analyzeSearchIntent(query);
     console.log(`Search intent: ${intent.intentLabel} (${intent.category}), keywords: [${intent.queryKeywords.join(', ')}], model: ${intent.modelQuery ? `${intent.modelQuery.brand} ${intent.modelQuery.model}` : 'none'}`);
 
@@ -1056,6 +1177,47 @@ function smartFilterProducts(query, products) {
     for (const [store, samples] of Object.entries(samplesByStore)) {
         console.log(`  ${store}: ${samples.map(s => `"${s}"`).join(', ')}`);
     }
+
+    // TRY AI FILTERING FIRST (if API key is available)
+    const aiValidIndices = await aiFilterProducts(query, products);
+
+    if (aiValidIndices && aiValidIndices.length > 0) {
+        // AI filtering succeeded - use AI results
+        console.log(`AI filter: Keeping ${aiValidIndices.length} products`);
+
+        const aiFiltered = aiValidIndices.map(i => {
+            const product = products[i];
+            const discount = analyzeDiscount(product);
+            return {
+                ...product,
+                relevanceScore: 0.95, // AI approved
+                classification: 'AI Onaylı',
+                discountStatus: discount.status,
+                discountPercentage: discount.discountPercentage || 0,
+                shortComment: discount.comment || null
+            };
+        }).sort((a, b) => a.price - b.price);
+
+        // Log per-store breakdown
+        const storeBreakdown = {};
+        aiFiltered.forEach(p => {
+            storeBreakdown[p.store] = (storeBreakdown[p.store] || 0) + 1;
+        });
+        console.log(`AI filter result: ${aiFiltered.length} products`);
+        console.log(`By store: ${Object.entries(storeBreakdown).map(([s,c]) => `${s}:${c}`).join(', ')}`);
+
+        return {
+            searchIntent: intent.intentLabel,
+            totalScraped: products.length,
+            filteredCount: aiFiltered.length,
+            removedCount: products.length - aiFiltered.length,
+            products: aiFiltered,
+            filterMethod: 'ai'
+        };
+    }
+
+    // FALLBACK: Rule-based filtering
+    console.log('Using rule-based filtering (AI unavailable or no matches)');
 
     const analyzed = products.map(product => {
         const classification = classifyProduct(product, intent);
@@ -1110,7 +1272,7 @@ function smartFilterProducts(query, products) {
     relevant.forEach(p => {
         storeBreakdown[p.store] = (storeBreakdown[p.store] || 0) + 1;
     });
-    console.log(`Smart filter: ${relevant.length} relevant, ${removed.length} removed`);
+    console.log(`Rule-based filter: ${relevant.length} relevant, ${removed.length} removed`);
     console.log(`By store: ${Object.entries(storeBreakdown).map(([s,c]) => `${s}:${c}`).join(', ')}`);
 
     return {
@@ -1118,7 +1280,8 @@ function smartFilterProducts(query, products) {
         totalScraped: products.length,
         filteredCount: relevant.length,
         removedCount: removed.length,
-        products: relevant
+        products: relevant,
+        filterMethod: 'rules'
     };
 }
 
